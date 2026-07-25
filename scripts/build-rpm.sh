@@ -33,9 +33,9 @@ echo "${tarball_sha256}  ${cache_dir}/${tarball}" | sha256sum -c -
 mkdir -p "${repo_root}/${outdir}"
 
 podman run --rm \
-    -v "${repo_root}/bash-completion.spec:/work/bash-completion.spec:ro" \
-    -v "${cache_dir}/${tarball}:/work/${tarball}:ro" \
-    -v "${repo_root}/${outdir}:/out" \
+    -v "${repo_root}/bash-completion.spec:/work/bash-completion.spec:ro,z" \
+    -v "${cache_dir}/${tarball}:/work/${tarball}:ro,z" \
+    -v "${repo_root}/${outdir}:/out:z" \
     "${image}" \
     bash -c '
         set -euo pipefail

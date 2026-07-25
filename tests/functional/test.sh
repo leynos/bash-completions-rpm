@@ -59,13 +59,15 @@ echo "$out" | grep -q -- '--extract' || fail "tar --<TAB> offered no long option
 # mount <TAB> after an option still behaves (no crash, sane exit)
 out=$(get_completions 'umount ') || fail "umount completion crashed"
 
-# 4. Filename fallback still works with bash-completion loaded:
-#    completing a path prefix under / must offer usr/.
+# 4. Fallback registration: for a command with no completion file, the -D
+#    loader must register the minimal completion, which delegates to
+#    readline's filename completion via "compopt -o default".
 out=$(bash --norc -c '
     source /usr/share/bash-completion/bash_completion
-    cd /
-    compgen -d us
+    _comp_complete_load no-such-command-b7f3 || true
+    complete -p no-such-command-b7f3
 ')
-echo "$out" | grep -qx 'usr' || fail "directory completion for /us broken: $out"
+echo "$out" | grep -q '_comp_complete_minimal' ||
+    fail "minimal fallback completion not registered: $out"
 
 echo "FUNCTIONAL OK"

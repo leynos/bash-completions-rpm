@@ -11,16 +11,18 @@ ______________________________________________________________________
 
 ## Why bash-completions-rpm?
 
-- **Current completions**: Fedora 43 ships 2.16 and Rocky 10 older still;
-  upstream 2.18.0 brings hundreds of new and fixed completions.
+- **Current completions**: Fedora 43 ships 2.16, while Rocky Linux 10 ships
+  an older release still; upstream 2.18.0 brings hundreds of new and fixed
+  completions.
 - **Safe upgrade path**: the spec keeps `Epoch: 1` and follows Fedora's
   conflict removals, so it installs over the distro package and is never
   silently superseded by it.
 - **Actually tested**: every build is installed into a pristine container
   and exercised — real `<TAB>` presses, real `COMPREPLY` output, all 1,091
   completion files parsed and sourced.
-- **No host pollution**: builds and tests both run inside podman
-  containers; your machine only needs podman and tmt.
+- **No host pollution**: the heavy lifting — `rpmbuild`, test guests —
+  happens inside podman containers; the host needs only a handful of
+  standard tools.
 
 ______________________________________________________________________
 
@@ -30,6 +32,9 @@ ______________________________________________________________________
 
 - podman (builds and tests run in containers)
 - tmt ≥ 1.38
+- curl (fetches the upstream release tarball)
+- sha256sum (coreutils; verifies the tarball checksum)
+- make
 
 ### Build and test
 

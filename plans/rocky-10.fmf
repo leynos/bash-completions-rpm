@@ -5,7 +5,8 @@ discover:
   how: fmf
 provision:
   how: container
-  image: docker.io/rockylinux/rockylinux:10
+  # Digest-pinned rockylinux:10 (as of 2026-07-25) for reproducible guests
+  image: quay.io/rockylinux/rockylinux@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
 prepare:
   - name: install-built-rpms
     how: install

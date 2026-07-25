@@ -25,14 +25,17 @@ test "$syntax_failures" -eq 0
 # Each file must source without emitting errors in a shell that has
 # bash_completion loaded. A non-zero exit status alone is fine: many
 # completions return early when the command they complete is not installed.
+src_err=$(mktemp)
+trap 'rm -f "$src_err"' EXIT
+
 source_failures=0
 for f in $files; do
     # _comp_load sources completion files from inside a function, so file-scope
     # "local" is legal; emulate that here.
-    bash --norc -c "source ${datadir}/bash_completion && _t() { source '$f'; }; _t" 2>/tmp/src-err || true
-    if [ -s /tmp/src-err ]; then
+    bash --norc -c "source ${datadir}/bash_completion && _t() { source '$f'; }; _t" 2>"$src_err" || true
+    if [ -s "$src_err" ]; then
         echo "SOURCE FAIL: $f" >&2
-        cat /tmp/src-err >&2
+        cat "$src_err" >&2
         source_failures=$((source_failures + 1))
     fi
 done
