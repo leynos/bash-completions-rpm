@@ -5,8 +5,15 @@ FEDORA_IMAGE := registry.fedoraproject.org/fedora:43
 ROCKY_IMAGE  := quay.io/rockylinux/rockylinux@sha256:827d37bc128288ccf160ee318bb3cb92d591164cb217e92f8bc61e3982ae1834
 
 # netavark's nftables firewall rules fail on WSL2 kernels; they are not
-# needed for these rootless test containers, so tell netavark to skip them.
+# needed for these rootless test containers, so tell netavark to skip them
+# there. Elsewhere (including CI runners, whose older netavark rejects the
+# "none" backend) leave the default firewall driver alone.
+IS_WSL := $(shell grep -qi microsoft /proc/version 2>/dev/null && echo 1)
+ifeq ($(IS_WSL),1)
 TMT := NETAVARK_FW=none tmt
+else
+TMT := tmt
+endif
 
 .PHONY: all rpms rpm-fedora-43 rpm-rocky-10 test test-fedora-43 test-rocky-10 lint clean
 
