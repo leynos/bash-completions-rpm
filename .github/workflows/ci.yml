@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: Build and test (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [fedora-43, rocky-10]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tmt
+        run: pipx install 'tmt[provision-container]'
+
+      # test-<target> depends on rpm-<target>, so one invocation builds the
+      # RPMs and then runs the tmt plan against them.
+      - name: Build RPMs and run tmt plan
+        run: make test-${{ matrix.target }}
+
+      - name: Upload tmt logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmt-logs-${{ matrix.target }}
+          path: /var/tmp/tmt/${{ matrix.target }}
+          if-no-files-found: ignore
+
+      - name: Upload RPMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpms-${{ matrix.target }}
+          path: dist/${{ matrix.target }}/

@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-test:
+    name: Build and test (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [fedora-43, rocky-10]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tmt
+        run: pipx install 'tmt[provision-container]'
+
+      # test-<target> depends on rpm-<target>, so one invocation builds the
+      # RPMs and then runs the tmt plan against them.
+      - name: Build RPMs and run tmt plan
+        run: make test-${{ matrix.target }}
+
+      - name: Upload RPMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpms-${{ matrix.target }}
+          path: dist/${{ matrix.target }}/
+
+  release:
+    name: Publish GitHub release
+    needs: build-and-test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download built RPMs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rpms-*
+          path: dist-artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p assets
+          find dist-artifacts -name '*.rpm' -exec cp {} assets/ \;
+          ls -l assets
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag='${{ github.ref_name }}'
+          prerelease_flag=''
+          case "$tag" in
+            *pre*|*rc*|*alpha*|*beta*) prerelease_flag='--prerelease' ;;
+          esac
+          gh release create "$tag" \
+            --title "bash-completion $tag" \
+            --generate-notes \
+            $prerelease_flag \
+            assets/*.rpm
