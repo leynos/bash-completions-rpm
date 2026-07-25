@@ -1,49 +1,97 @@
-# bash-completion 2.18.0 RPMs for Fedora 43 and Rocky Linux 10
+# 🐚 bash-completions-rpm
 
-Packaging for [bash-completion 2.18.0](https://github.com/scop/bash-completion/releases/tag/2.18.0),
-rebuilt for distributions whose official RPMs lag behind upstream. The spec is
-derived from the Fedora rawhide spec, with distribution patches dropped (none
-apply to 2.18.0). The package keeps `Epoch: 1` so upgrade paths against the
-distro packages behave correctly.
+*Fresh bash-completion 2.18.0 RPMs for Fedora 43 and Rocky Linux 10.*
 
-## Requirements
+The official packages lag well behind upstream. This project rebuilds
+[bash-completion 2.18.0](https://github.com/scop/bash-completion/releases/tag/2.18.0)
+for both distributions and tests the result properly — in containers, with
+`tmt`, before it goes anywhere near your shell.
 
-- podman (builds run in containers; tests use the tmt container provisioner)
-- tmt >= 1.38
+______________________________________________________________________
 
-## Building
+## Why bash-completions-rpm?
 
-```console
-make rpms            # both targets
-make rpm-fedora-43   # dist/fedora-43/
-make rpm-rocky-10    # dist/rocky-10/
+- **Current completions**: Fedora 43 ships 2.16 and Rocky 10 older still;
+  upstream 2.18.0 brings hundreds of new and fixed completions.
+- **Safe upgrade path**: the spec keeps `Epoch: 1` and follows Fedora's
+  conflict removals, so it installs over the distro package and is never
+  silently superseded by it.
+- **Actually tested**: every build is installed into a pristine container
+  and exercised — real `<TAB>` presses, real `COMPREPLY` output, all 1,091
+  completion files parsed and sourced.
+- **No host pollution**: builds and tests both run inside podman
+  containers; your machine only needs podman and tmt.
+
+______________________________________________________________________
+
+## Quick start
+
+### Requirements
+
+- podman (builds and tests run in containers)
+- tmt ≥ 1.38
+
+### Build and test
+
+```shell
+# Build RPMs for both targets
+make rpms
+
+# dist/fedora-43/bash-completion-2.18.0-1.fc43.noarch.rpm
+# dist/rocky-10/bash-completion-2.18.0-1.el10.noarch.rpm
+# (plus -devel subpackages, and SRPMs under dist/<target>/srpm/)
+
+# Run the full test suite, one podman container per plan
+make test
 ```
 
-The build script downloads the upstream tarball (sha256-pinned) into
-`.build/`, then runs `rpmbuild` inside the matching distribution container.
-Binary RPMs land in `dist/<target>/`, the SRPM in `dist/<target>/srpm/`.
+### Install
 
-## Testing
-
-```console
-make test            # both plans, sequentially
-make test-fedora-43
-make test-rocky-10
+```shell
+sudo dnf install ./dist/fedora-43/bash-completion-2.18.0-1.fc43.noarch.rpm
 ```
 
-Each tmt plan provisions a podman container, installs the freshly built RPMs
-from `dist/<target>/`, and runs the test suite:
+______________________________________________________________________
 
-| Test                | What it checks                                                        |
-| ------------------- | --------------------------------------------------------------------- |
-| `/tests/smoke`      | EVR (incl. epoch), `rpm -V` integrity, payload, profile.d behaviour, pkg-config/cmake devel files |
-| `/tests/functional` | Default dynamic loader registration, on-demand `_comp_load`, real `COMPREPLY` output for `kill -`, `tar --`, path completion |
-| `/tests/syntax`     | All ~1091 shipped completion files parse (`bash -O extglob -n`) and source cleanly under the loader |
-| `/tests/upgrade`    | `dnf upgrade` against distro repos does not replace the local build   |
-| `/tests/rpmlint`    | Zero rpmlint errors (Fedora only; rpmlint is absent from Rocky repos) |
+## Features
 
-`NETAVARK_FW=none` is set by the Makefile because netavark's nftables rules
-fail on WSL2 kernels; the firewall is unnecessary for these rootless
-containers.
+- Spec derived from Fedora rawhide, with distribution patches dropped
+  (none apply to 2.18.0) and the dejagnu test machinery removed.
+- Containerized builds via `scripts/build-rpm.sh`, with the upstream
+  tarball pinned by sha256.
+- One `tmt` plan per target, each provisioning a podman container and
+  installing the freshly built RPMs before testing:
 
-VM-based testing (tmt `provision --how virtual`) is a possible follow-up.
+| Test                | What it checks                                       |
+| ------------------- | ---------------------------------------------------- |
+| `/tests/smoke`      | EVR (incl. epoch), `rpm -V` integrity, payload,      |
+|                     | profile.d behaviour, pkg-config/cmake devel files    |
+| `/tests/functional` | Dynamic loader registration, on-demand `_comp_load`, |
+|                     | real `COMPREPLY` for `kill -`, `tar --`, and paths   |
+| `/tests/syntax`     | All 1,091 completion files parse and source cleanly  |
+| `/tests/upgrade`    | `dnf upgrade` cannot replace the local build         |
+| `/tests/rpmlint`    | Zero rpmlint errors (Fedora only)                    |
+
+______________________________________________________________________
+
+## Notes
+
+- The Makefile sets `NETAVARK_FW=none` for tmt runs: netavark's nftables
+  rules fail on WSL2 kernels, and the firewall is unnecessary for
+  rootless test containers.
+- VM-based testing (`tmt provision --how virtual`) is a planned
+  follow-up; container coverage comes first.
+
+______________________________________________________________________
+
+## Licence
+
+The packaged software and the spec are GPL-2.0-or-later, matching
+upstream [bash-completion](https://github.com/scop/bash-completion).
+
+______________________________________________________________________
+
+## Contributing
+
+Contributions welcome! Open an issue or pull request — and please run
+`make test` before submitting.
