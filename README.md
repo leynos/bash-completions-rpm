@@ -62,15 +62,13 @@ ______________________________________________________________________
 - One `tmt` plan per target, each provisioning a podman container and
   installing the freshly built RPMs before testing:
 
-| Test                | What it checks                                       |
-| ------------------- | ---------------------------------------------------- |
-| `/tests/smoke`      | EVR (incl. epoch), `rpm -V` integrity, payload,      |
-|                     | profile.d behaviour, pkg-config/cmake devel files    |
-| `/tests/functional` | Dynamic loader registration, on-demand `_comp_load`, |
-|                     | real `COMPREPLY` for `kill -`, `tar --`, and paths   |
-| `/tests/syntax`     | All 1,091 completion files parse and source cleanly  |
-| `/tests/upgrade`    | `dnf upgrade` cannot replace the local build         |
-| `/tests/rpmlint`    | Zero rpmlint errors (Fedora only)                    |
+| Test                | What it checks                                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------------------- |
+| `/tests/smoke`      | EVR (incl. epoch), `rpm -V` integrity, payload, profile.d behaviour, pkg-config/cmake devel files |
+| `/tests/functional` | Dynamic loader registration, on-demand `_comp_load`, real `COMPREPLY` for `kill -` and `tar --`   |
+| `/tests/syntax`     | All 1,091 completion files parse and source cleanly                                               |
+| `/tests/upgrade`    | `dnf upgrade` cannot replace the local build                                                      |
+| `/tests/rpmlint`    | Zero rpmlint errors (Fedora only)                                                                 |
 
 ______________________________________________________________________
 
