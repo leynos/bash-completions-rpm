@@ -1,0 +1,5 @@
+summary: Package sanity - versions, files, integrity, sourcing
+test: ./test.sh
+require:
+  - /usr/bin/pkg-config
+duration: 5m

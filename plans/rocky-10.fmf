@@ -1,0 +1,14 @@
+summary: Install and test the bash-completion RPMs on Rocky Linux 10
+context:
+  distro: rocky-10
+discover:
+  how: fmf
+provision:
+  how: container
+  image: docker.io/rockylinux/rockylinux:10
+prepare:
+  - name: install-built-rpms
+    how: install
+    directory: dist/rocky-10
+execute:
+  how: tmt

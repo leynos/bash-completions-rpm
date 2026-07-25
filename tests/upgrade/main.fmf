@@ -1,0 +1,3 @@
+summary: Distro repositories must not supersede the local build
+test: ./test.sh
+duration: 10m

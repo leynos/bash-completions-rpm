@@ -1,0 +1,6 @@
+summary: Completion behaviour - dynamic loading and real COMPREPLY output
+test: ./test.sh
+require:
+  - tar
+  - util-linux
+duration: 10m
