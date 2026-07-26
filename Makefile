@@ -1,4 +1,5 @@
-FEDORA_IMAGE := registry.fedoraproject.org/fedora:43
+# Digest-pinned for reproducibility; this is fedora:43 as of 2026-07-26.
+FEDORA_IMAGE := registry.fedoraproject.org/fedora@sha256:af06c24b2e90bef115bba80e428ac21466db8869ad544f3424b969513b67eeae
 # quay.io rather than docker.io: Docker Hub rate-limits anonymous pulls,
 # which bites on shared CI runner IPs. Digest-pinned for reproducibility;
 # this is rockylinux:10 as of 2026-07-25.
@@ -16,6 +17,10 @@ TMT := tmt
 endif
 
 .PHONY: all rpms rpm-fedora-43 rpm-rocky-10 test test-fedora-43 test-rocky-10 lint clean
+
+# The rpm targets share the .build tarball cache and the test targets share
+# podman resources; parallel make would race on both.
+.NOTPARALLEL:
 
 all: test
 
