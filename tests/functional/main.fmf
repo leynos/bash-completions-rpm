@@ -3,4 +3,7 @@ test: ./test.sh
 require:
   - tar
   - util-linux
+  # script(1) provides the pty for the interactive fallback test; Fedora
+  # packages it separately (util-linux-script), so require the file path
+  - /usr/bin/script
 duration: 10m
