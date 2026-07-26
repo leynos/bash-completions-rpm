@@ -79,11 +79,22 @@ ______________________________________________________________________
 
 ## Notes
 
-- The Makefile sets `NETAVARK_FW=none` for tmt runs: netavark's nftables
-  rules fail on WSL2 kernels, and the firewall is unnecessary for
-  rootless test containers.
+- The Makefile sets `NETAVARK_FW=none` for tmt runs only when it detects a
+  WSL2 kernel (`grep -qi microsoft /proc/version`): netavark's nftables
+  rules fail there, and the firewall is unnecessary for rootless test
+  containers. Elsewhere — including CI runners, whose older netavark
+  rejects the `none` backend — the default firewall driver is left alone.
 - VM-based testing (`tmt provision --how virtual`) is a planned
   follow-up; container coverage comes first.
+
+______________________________________________________________________
+
+## Learn more
+
+- [User's guide](docs/users-guide.md): installing the packages, the
+  `-devel` subpackage, upgrade behaviour, and building/testing locally.
+- [Developer's guide](docs/developers-guide.md): repository layout, the
+  build and test architecture, and the CI/release workflow.
 
 ______________________________________________________________________
 
