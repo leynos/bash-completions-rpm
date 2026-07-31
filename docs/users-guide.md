@@ -35,7 +35,7 @@ ______________________________________________________________________
 
 Each tagged release of this repository publishes the built RPMs and
 SRPMs as assets, one set per target, on the repository's Releases page.
-Download the RPM for your distribution and install it with `dnf`:
+Download the RPM for the target distribution and install it with `dnf`:
 
 ```shell
 sudo dnf install ./bash-completion-2.18.0-1.fc43.noarch.rpm
@@ -47,10 +47,18 @@ or, on Rocky Linux 10:
 sudo dnf install ./bash-completion-2.18.0-1.el10.noarch.rpm
 ```
 
-The release assets are **unsigned**. Before installing, check the
-downloaded file's SHA-256 checksum against the checksum published with
-the release (for example, a `SHA256SUMS` file or the checksum shown in
-the release notes) rather than trusting the file on its own.
+Each release also publishes a `SHA256SUMS` manifest alongside the RPM
+and SRPM assets. As the RPMs are unsigned, this manifest is the
+integrity check available: download it into the same directory as
+the downloaded RPM and run:
+
+```shell
+sha256sum -c SHA256SUMS
+```
+
+`sha256sum -c` reports a failure for any file listed in the manifest
+but not downloaded, so verifying a single RPM is best done with
+`sha256sum -c --ignore-missing SHA256SUMS`.
 
 To also get the pkg-config and CMake files, install the `-devel`
 subpackage alongside the base package:
@@ -73,7 +81,7 @@ ______________________________________________________________________
 
 ## Building and testing locally
 
-To build the RPMs yourself instead of downloading a release asset, see
+To build the RPMs locally instead of downloading a release asset, see
 the [README's Quick start](../README.md#quick-start) for the required
 tools (podman, tmt, curl, sha256sum, make) and:
 

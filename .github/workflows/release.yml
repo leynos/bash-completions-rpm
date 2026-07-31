@@ -16,7 +16,9 @@ jobs:
       matrix:
         target: [fedora-43, rocky-10]
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned by commit SHA, matching the digest pinning used for
+      # the build/test container images.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
@@ -29,7 +31,7 @@ jobs:
         run: make test-${{ matrix.target }}
 
       - name: Upload RPMs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rpms-${{ matrix.target }}
           path: dist/${{ matrix.target }}/
@@ -42,12 +44,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
       - name: Download built RPMs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: rpms-*
           path: dist-artifacts
@@ -56,7 +58,12 @@ jobs:
         run: |
           mkdir -p assets
           find dist-artifacts -name '*.rpm' -exec cp {} assets/ \;
+          # The RPMs are unsigned, so publish a checksum manifest alongside
+          # them. Generated from inside assets/ so it lists bare filenames and
+          # `sha256sum -c SHA256SUMS` verifies a directory of downloads as-is.
+          (cd assets && sha256sum -- *.rpm > SHA256SUMS)
           ls -l assets
+          cat assets/SHA256SUMS
 
       - name: Create release
         env:
@@ -73,4 +80,4 @@ jobs:
             --title "bash-completion $tag" \
             --generate-notes \
             $prerelease_flag \
-            assets/*.rpm
+            assets/*.rpm assets/SHA256SUMS

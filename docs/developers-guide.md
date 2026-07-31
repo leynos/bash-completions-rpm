@@ -74,8 +74,8 @@ The five tests, in `tests/<name>/`:
 | Test         | What it checks                                                                                                                                              |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `smoke`      | EVR (incl. epoch), `rpm -V` integrity, key payload paths, removed completions stay removed, `profile.d` hook behaviour, main file sources cleanly, `-devel` pkg-config/CMake files usable. |
-| `functional` | `-D` dynamic loader registers; `_comp_load` loads `tar`/`kill` on demand; real `COMPREPLY` for `kill -`, `tar --`, `umount `; `-D` fallback retries (124) and registers `_comp_complete_minimal`; end-to-end interactive `<TAB>` via a `script(1)` pty completes through that fallback. |
-| `syntax`     | Every shipped completion file under `completions-core/` and `completions-fallback/` (more than 400 of them) is valid bash under `bash -O extglob -n`, and each one sources without error on top of the loaded `bash_completion` file. |
+| `functional` | `-D` dynamic loader registers; `_comp_load` loads `tar`/`kill` on demand; real `COMPREPLY` for `kill -`, `tar --`, `umount` followed by a trailing space; `-D` fallback retries (124) and registers `_comp_complete_minimal`; end-to-end interactive `<TAB>` via a `script(1)` pty completes through that fallback. |
+| `syntax`     | Every shipped completion file under `completions-core/` and `completions-fallback/` (1,091 of them) is valid bash under `bash -O extglob -n`, and each one sources without error on top of the loaded `bash_completion` file. A floor of more than 400 files is asserted as a sanity guard on top of checking all of them. |
 | `upgrade`    | With the local build installed, `dnf upgrade` does not replace it, and the distro's repository candidate really does compare as older via `rpm.vercmp`. |
 | `rpmlint`    | `rpmlint --installed` reports no errors on either package. Disabled on Rocky Linux 10, where `rpmlint` is not available in the base repositories. |
 
@@ -88,7 +88,7 @@ ______________________________________________________________________
 
 ## Makefile dependency graph
 
-```
+```text
 test  → test-fedora-43 → rpm-fedora-43
       → test-rocky-10  → rpm-rocky-10
 
@@ -118,21 +118,25 @@ ______________________________________________________________________
 It matrices over `[fedora-43, rocky-10]`, running `make test-<target>`
 for each (which builds the RPMs and then the `tmt` plan). On failure it
 uploads the `tmt` logs; on success or failure it uploads the built RPMs
-as artifacts. A `concurrency` group keyed on the workflow and ref cancels
+as artefacts. A `concurrency` group keyed on the workflow and ref cancels
 superseded runs of the same branch or PR. The workflow requests only
 `contents: read` permission.
 
 `.github/workflows/release.yml` runs on pushes of tags matching `v*`. It
 repeats the same build-and-test matrix, then a separate `release` job
 (scoped to `contents: write`, the only job that needs it) downloads the
-built RPM artifacts, collects every `*.rpm` file (binary and source) into
-`assets/`, and runs `gh release create`. The release title is
-`bash-completion <tag>`, notes are auto-generated, and the tag name is
-read from the `GITHUB_REF_NAME` environment variable rather than
-interpolated from `github.ref` directly, to avoid shell injection via a
-crafted tag name. A tag containing `pre`, `rc`, `alpha`, or `beta`
-anywhere in its name causes the release to be created with
-`--prerelease`.
+built RPM artefacts, collects every `*.rpm` file (binary and source) into
+`assets/`, generates a `SHA256SUMS` manifest of those RPMs (`sha256sum --
+*.rpm`, run from inside `assets/` so the manifest lists bare filenames),
+and runs `gh release create`. The release title is `bash-completion
+<tag>`, notes are auto-generated, and the tag name is read from the
+`GITHUB_REF_NAME` environment variable rather than interpolated from
+`github.ref` directly, to avoid shell injection via a crafted tag name. A
+tag containing `pre`, `rc`, `alpha`, or `beta` anywhere in its name causes
+the release to be created with `--prerelease`. `SHA256SUMS` is attached to
+the release alongside the RPMs. All actions in both workflows are pinned
+by full commit SHA, matching the container-image digest-pinning
+convention above.
 
 ______________________________________________________________________
 
