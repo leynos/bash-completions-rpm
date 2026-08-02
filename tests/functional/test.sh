@@ -35,8 +35,10 @@ get_completions() {
         source /usr/share/bash-completion/bash_completion
         COMP_LINE=$1
         COMP_POINT=${#COMP_LINE}
-        eval set -- "$COMP_LINE"
-        COMP_WORDS=("$@")
+        # Split on whitespace with read rather than "eval set --": every
+        # command line this test drives is a plain unquoted literal, so no
+        # shell-quoting needs interpreting and no input reaches the parser.
+        read -ra COMP_WORDS <<<"$COMP_LINE"
         [[ $COMP_LINE == *" " ]] && COMP_WORDS+=("")
         COMP_CWORD=$((${#COMP_WORDS[@]} - 1))
         cmd=${COMP_WORDS[0]}

@@ -26,17 +26,28 @@ ______________________________________________________________________
 
 ## Build flow
 
-`scripts/build-rpm.sh <image> <outdir>` builds the RPM for one target:
+`scripts/build-rpm.sh <image> <outdir>` builds the RPM for one target. It
+is organised into two functions, called in order from the bottom of the
+script:
 
-1. Downloads the upstream `bash-completion-2.18.0.tar.xz` release tarball
-   into `.build/` if it isn't already cached there, and verifies it
-   against a sha256 checksum pinned in the script.
-2. Runs `podman run` against the given container image, mounting the
-   spec, the cached tarball, and the output directory. Inside the
-   container it installs `rpm-build` and `make`, then runs `rpmbuild -ba`
-   against the spec.
-3. Copies the resulting binary RPMs to `<outdir>/` and the SRPM to
-   `<outdir>/srpm/`.
+1. `fetch_tarball` downloads the upstream
+   `bash-completion-2.18.0.tar.xz` release tarball into `.build/`.
+   Reuse of a cached file is checksum-gated: it is verified against a
+   sha256 pinned in the script rather than merely checked for
+   existence, so a truncated or corrupt file left behind by an
+   interrupted run is re-fetched instead of failing the build. Each
+   download goes to a per-invocation `mktemp` file inside `.build/`
+   and is published to the final name with a single atomic rename; an
+   `EXIT` trap removes the temporary file on failure. This makes the
+   cache safe for concurrent invocations to share: the `Makefile`'s
+   `.NOTPARALLEL` only orders targets within one `make` process, so
+   two `make` runs, or two direct calls to the script, can reach the
+   download at the same time.
+2. `build_in_container` runs `podman run` against the given container
+   image, mounting the spec, the cached tarball, and the output
+   directory. Inside the container it installs `rpm-build` and `make`,
+   runs `rpmbuild -ba` against the spec, then copies the resulting
+   binary RPMs to `<outdir>/` and the SRPM to `<outdir>/srpm/`.
 
 The `Makefile` wires this up per target:
 
@@ -84,6 +95,34 @@ The `functional` test's interactive fallback check requires `script(1)`
 Fedora) to provide the pty that readline needs for a real `<TAB>` press
 to be observed.
 
+### Test strategy
+
+`syntax` and `upgrade` each assert an invariant that is deliberately
+checked exhaustively rather than by property-based sampling:
+
+- **Completion-file validity.** `syntax` enumerates every completion
+  file the installed RPM actually ships, from `rpm -ql`'s own manifest,
+  and checks all 1,091 of them — the whole population, not a sample —
+  so there is no remaining input space for a property test to explore.
+  The `>400` assertion in that test is a sanity floor guarding against
+  the selector silently matching nothing; it is not the invariant being
+  tested.
+- **EVR ordering.** The invariant that matters is not that
+  `rpm.vercmp` is a correct total order over arbitrary EVR pairs — that
+  is upstream `rpm`'s own property, and it is tested there — but that
+  the specific EVR this repository ships sorts above the specific
+  candidate the distribution's repositories currently offer. `upgrade`
+  asserts exactly that, against the real distro repository metadata
+  inside the container, using `rpm`'s own comparison function.
+  Generated EVR pairs would not exercise the deployment fact actually
+  at risk.
+
+Both EVR strings are validated against a conservative character
+pattern before being interpolated into the `rpm --eval
+"%{lua:...}"` expression, so the generated expression's quoting is
+well defined and malformed query output fails loudly rather than
+silently.
+
 ______________________________________________________________________
 
 ## Makefile dependency graph
@@ -99,9 +138,13 @@ rpms  → rpm-fedora-43
 Each `test-<target>` target depends on `rpm-<target>`, so a single
 `make test-<target>` invocation builds the RPMs and then runs the `tmt`
 plan against them (this is what CI uses). The Makefile declares
-`.NOTPARALLEL` because the `rpm-*` targets share the `.build/` tarball
-cache and the `test-*` targets share podman resources, and parallel
-`make` would race on both.
+`.NOTPARALLEL` because the `test-*` targets share podman resources and
+parallel `make` would race on them. `.NOTPARALLEL` only orders targets
+within a single `make` process, though: the `.build/` tarball cache
+shared by the `rpm-*` targets is protected independently, by
+`fetch_tarball`'s checksum-gated reuse and atomic rename, so separate
+`make` invocations (or direct script calls) racing on the same cache
+entry remain safe.
 
 The Makefile also detects a WSL2 kernel (`grep -qi microsoft
 /proc/version`) and, only in that case, runs `tmt` with

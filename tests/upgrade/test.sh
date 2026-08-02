@@ -15,6 +15,18 @@ test "$after" = "$before"
 repo_evr=$(dnf -q repoquery --qf '%{EVR}\n' bash-completion 2>/dev/null | sort -u | tail -n1 || true)
 echo "distro candidate: ${repo_evr:-none}, installed: $after"
 test -n "$repo_evr"
+# Both values are interpolated into a Lua expression below, so check they
+# look like EVRs first. This keeps the quoting of the generated expression
+# well defined and catches malformed query output early.
+evr_pattern='^[A-Za-z0-9._:+~^-]+$'
+[[ $repo_evr =~ $evr_pattern ]] || {
+    echo "unexpected repository EVR: $repo_evr" >&2
+    exit 1
+}
+[[ $after =~ $evr_pattern ]] || {
+    echo "unexpected installed EVR: $after" >&2
+    exit 1
+}
 # rpm.vercmp compares full EVR strings; -1 means the candidate is older
 cmp=$(rpm --eval "%{lua:print(rpm.vercmp('${repo_evr}', '${after}'))}")
 test "$cmp" = "-1"
