@@ -13,6 +13,8 @@ ______________________________________________________________________
   removed.
 - `scripts/build-rpm.sh`: builds the RPMs for one target inside a podman
   container.
+- `scripts/tests/test-build-rpm.sh`: host-side unit tests for
+  `build-rpm.sh`, run via `make unit`.
 - `plans/`: `tmt` plans, one per target (`fedora-43.fmf`, `rocky-10.fmf`),
   each provisioning a container and installing the freshly built RPMs
   before running the tests.
@@ -27,7 +29,7 @@ ______________________________________________________________________
 ## Build flow
 
 `scripts/build-rpm.sh <image> <outdir>` builds the RPM for one target. It
-is organised into two functions, called in order from the bottom of the
+is organized into two functions, called in order from the bottom of the
 script:
 
 1. `fetch_tarball` downloads the upstream
@@ -46,8 +48,24 @@ script:
 2. `build_in_container` runs `podman run` against the given container
    image, mounting the spec, the cached tarball, and the output
    directory. Inside the container it installs `rpm-build` and `make`,
-   runs `rpmbuild -ba` against the spec, then copies the resulting
-   binary RPMs to `<outdir>/` and the SRPM to `<outdir>/srpm/`.
+   runs `rpmbuild -ba` against the spec, then clears any RPMs left
+   over from an earlier build out of `<outdir>/` and `<outdir>/srpm/`
+   before copying in the freshly built binary RPMs and SRPM. The
+   output directory persists between runs, and both the `tmt` plans'
+   `prepare` step (which installs every RPM under `dist/<target>`)
+   and the release job (which globs every `*.rpm`) would otherwise
+   pick up a stale package from a previous version alongside the
+   current build.
+
+Every external command the script invokes (`curl`, `sha256sum`,
+`podman`) and every pinned input (`VERSION`, `TARBALL_URL`,
+`TARBALL_SHA256`, `CACHE_DIR`) can be overridden from the environment,
+each via a `: "${NAME:=default}"` seam. Real builds override none of
+them; the seams exist so `scripts/tests/test-build-rpm.sh` can drive
+the script against stub commands and a local fixture, with no network
+or container runtime. `<outdir>` is normally resolved relative to the
+repository root, but an absolute path is taken as given — the unit
+tests use that to write outside the checkout.
 
 The `Makefile` wires this up per target:
 
@@ -70,6 +88,12 @@ SRPM under `dist/<target>/srpm/`.
 ______________________________________________________________________
 
 ## Test architecture
+
+`make unit` runs `scripts/tests/test-build-rpm.sh`, a host-side suite
+that exercises `build-rpm.sh`'s own validation and orchestration —
+argument checking, cache reuse and re-fetch, checksum enforcement, and
+the `podman` invocation's mounts — against stub commands and a local
+fixture, with no network or container runtime required.
 
 Each target has a `tmt` plan (`plans/fedora-43.fmf`, `plans/rocky-10.fmf`)
 that:
@@ -97,8 +121,9 @@ to be observed.
 
 ### Test strategy
 
-`syntax` and `upgrade` each assert an invariant that is deliberately
-checked exhaustively rather than by property-based sampling:
+`syntax`, `functional`, and `upgrade` each assert an invariant, but
+layer their checks differently depending on how large the input space
+is and whether a single deployment fact is what is actually at risk:
 
 - **Completion-file validity.** `syntax` enumerates every completion
   file the installed RPM actually ships, from `rpm -ql`'s own manifest,
@@ -107,21 +132,37 @@ checked exhaustively rather than by property-based sampling:
   The `>400` assertion in that test is a sanity floor guarding against
   the selector silently matching nothing; it is not the invariant being
   tested.
+- **Completion robustness.** `functional` pins a handful of concrete
+  cases (`kill -`, `tar --`, `umount ` producing real `COMPREPLY`
+  output), then adds a bounded property check over a matrix of five
+  commands (`tar`, `kill`, `umount`, `chmod`, `grep`) and seven
+  current-word prefixes (empty, `-`, `--`, `--ex`, `/`, a non-existent
+  path, and a word matching nothing), asserting that no completion
+  function ever exits with an unexpected status or writes to stderr,
+  whatever partial word it is handed.
 - **EVR ordering.** The invariant that matters is not that
   `rpm.vercmp` is a correct total order over arbitrary EVR pairs — that
   is upstream `rpm`'s own property, and it is tested there — but that
-  the specific EVR this repository ships sorts above the specific
-  candidate the distribution's repositories currently offer. `upgrade`
-  asserts exactly that, against the real distro repository metadata
-  inside the container, using `rpm`'s own comparison function.
-  Generated EVR pairs would not exercise the deployment fact actually
-  at risk.
+  the specific EVR this repository ships sorts above whatever the
+  distribution's repositories currently offer. `upgrade` asserts that
+  against the real distro repository metadata inside the container,
+  using `rpm`'s own comparison function. That candidate is selected
+  with `dnf repoquery --latest-limit=1`, which orders by RPM version
+  rather than lexically — a lexical `sort` would rank `2.9` above
+  `2.10`; more than one line coming back instead fails the EVR
+  character-pattern check below loudly, rather than being silently
+  narrowed. It adds a bounded property check against 13 representative
+  older EVRs (epoch-less el7/el8/el9
+  forms, epoch-1 el10 and fc forms, a bare `1:2.18.0-1`, a pre-release
+  `0.1.rc1` release, and a `~rc1` tilde version). Each pair is compared
+  in both directions, so a comparison that silently returned 0 could
+  not pass.
 
-Both EVR strings are validated against a conservative character
-pattern before being interpolated into the `rpm --eval
-"%{lua:...}"` expression, so the generated expression's quoting is
-well defined and malformed query output fails loudly rather than
-silently.
+The two EVR strings used in the live comparison are validated against
+a conservative character pattern before being interpolated into the
+`rpm --eval "%{lua:...}"` expression, so the generated expression's
+quoting is well defined and malformed query output fails loudly rather
+than silently.
 
 ______________________________________________________________________
 
@@ -129,19 +170,24 @@ ______________________________________________________________________
 
 ```text
 test  → test-fedora-43 → rpm-fedora-43
+                       → unit
       → test-rocky-10  → rpm-rocky-10
+                       → unit
 
 rpms  → rpm-fedora-43
       → rpm-rocky-10
 ```
 
-Each `test-<target>` target depends on `rpm-<target>`, so a single
-`make test-<target>` invocation builds the RPMs and then runs the `tmt`
-plan against them (this is what CI uses). The Makefile declares
-`.NOTPARALLEL` because the `test-*` targets share podman resources and
-parallel `make` would race on them. `.NOTPARALLEL` only orders targets
-within a single `make` process, though: the `.build/` tarball cache
-shared by the `rpm-*` targets is protected independently, by
+Each `test-<target>` target depends on `rpm-<target>` and on `unit`, so
+a single `make test-<target>` invocation builds the RPMs, runs the
+host-side unit suite, and then runs the `tmt` plan against them (this
+is what CI uses). Both `test-*` targets depend on `unit`, but `make`
+runs it only once per invocation, even for a single-target run. The
+Makefile declares `.NOTPARALLEL` because the `test-*` targets share
+podman resources and parallel `make` would race on them.
+`.NOTPARALLEL` only orders targets within a single `make` process,
+though: the `.build/` tarball cache shared by the `rpm-*` targets is
+protected independently, by
 `fetch_tarball`'s checksum-gated reuse and atomic rename, so separate
 `make` invocations (or direct script calls) racing on the same cache
 entry remain safe.

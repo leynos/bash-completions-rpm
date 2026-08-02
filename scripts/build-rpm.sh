@@ -4,6 +4,12 @@
 # Usage: scripts/build-rpm.sh <image> <outdir>
 #   <image>   container image to build in (e.g. registry.fedoraproject.org/fedora:43)
 #   <outdir>  directory to place the built RPMs in (relative to the repo root)
+#
+# Every external command and every input pinned below can be overridden from
+# the environment. Real builds override none of them; the seams exist so
+# scripts/tests/test-build-rpm.sh can drive the download, caching and
+# orchestration logic against stub commands and a local fixture, without a
+# network or a container runtime. See that script for the intended usage.
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
@@ -15,12 +21,31 @@ image=$1
 outdir=$2
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
-version=2.18.0
-tarball="bash-completion-${version}.tar.xz"
-tarball_url="https://github.com/scop/bash-completion/releases/download/${version}/${tarball}"
-tarball_sha256=88bcf85124f77f74f2f2f8bcd16ac4382d807a827ede742a64940c7116aea33f
 
-cache_dir="${repo_root}/.build"
+# <outdir> is normally relative to the repo root; an absolute path is taken
+# as given, which is what the unit tests use to stay out of the checkout.
+if [[ ${outdir} == /* ]]; then
+    outdir_path=${outdir}
+else
+    outdir_path=${repo_root}/${outdir}
+fi
+
+# Injectable command seams.
+: "${CURL:=curl}"
+: "${SHA256SUM:=sha256sum}"
+: "${PODMAN:=podman}"
+
+# Injectable inputs.
+: "${VERSION:=2.18.0}"
+version=${VERSION}
+tarball="bash-completion-${version}.tar.xz"
+: "${TARBALL_URL:=https://github.com/scop/bash-completion/releases/download/${version}/${tarball}}"
+: "${TARBALL_SHA256:=88bcf85124f77f74f2f2f8bcd16ac4382d807a827ede742a64940c7116aea33f}"
+: "${CACHE_DIR:=${repo_root}/.build}"
+
+tarball_url=${TARBALL_URL}
+tarball_sha256=${TARBALL_SHA256}
+cache_dir=${CACHE_DIR}
 
 die() {
     echo "$0: $*" >&2
@@ -30,7 +55,7 @@ die() {
 # True when $1 exists and matches the expected checksum.
 checksum_matches() {
     [[ -f $1 ]] || return 1
-    echo "${tarball_sha256}  $1" | sha256sum -c --status -
+    echo "${tarball_sha256}  $1" | "${SHA256SUM}" -c --status -
 }
 
 # Fetch the upstream tarball into the shared cache, leaving a file at
@@ -57,7 +82,7 @@ fetch_tarball() {
     tmp=$(mktemp "${cache_dir}/${tarball}.XXXXXX")
     # shellcheck disable=SC2064  # expand tmp now: it is gone by trap time
     trap "rm -f '${tmp}'" EXIT
-    curl -fsSL -o "${tmp}" "${tarball_url}"
+    "${CURL}" -fsSL -o "${tmp}" "${tarball_url}"
     checksum_matches "${tmp}" ||
         die "checksum mismatch for downloaded ${tarball}"
     mv -f "${tmp}" "${cache_dir}/${tarball}"
@@ -67,12 +92,15 @@ fetch_tarball() {
 # Build the spec against the cached tarball inside a throwaway container,
 # copying the resulting packages out to ${outdir}.
 build_in_container() {
-    mkdir -p "${repo_root}/${outdir}"
+    mkdir -p "${outdir_path}"
 
-    podman run --rm \
+    # The single-quoted script below is expanded by the container's shell,
+    # not this one, so its ${...} references must survive unexpanded.
+    # shellcheck disable=SC2016
+    "${PODMAN}" run --rm \
         -v "${repo_root}/bash-completion.spec:/work/bash-completion.spec:ro,z" \
         -v "${cache_dir}/${tarball}:/work/${tarball}:ro,z" \
-        -v "${repo_root}/${outdir}:/out:z" \
+        -v "${outdir_path}:/out:z" \
         "${image}" \
         bash -c '
             set -euo pipefail
@@ -82,6 +110,12 @@ build_in_container() {
             cp /work/*.tar.xz "${topdir}/SOURCES/"
             rpmbuild --define "_topdir ${topdir}" -ba /work/bash-completion.spec
             mkdir -p /out/srpm
+            # Clear packages from earlier builds before publishing this one.
+            # The output directory persists between runs, and both the tmt
+            # plans and the release job take every *.rpm they find in it, so
+            # a leftover from a previous version would otherwise be installed
+            # and shipped alongside the current build.
+            rm -f /out/*.rpm /out/srpm/*.rpm
             cp "${topdir}"/RPMS/noarch/*.rpm /out/
             cp "${topdir}"/SRPMS/*.src.rpm /out/srpm/
             ls -l /out /out/srpm

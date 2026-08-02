@@ -16,7 +16,7 @@ else
 TMT := tmt
 endif
 
-.PHONY: all rpms rpm-fedora-43 rpm-rocky-10 test test-fedora-43 test-rocky-10 lint clean
+.PHONY: all rpms rpm-fedora-43 rpm-rocky-10 test test-fedora-43 test-rocky-10 unit lint clean
 
 # The rpm targets share the .build tarball cache and the test targets share
 # podman resources; parallel make would race on both.
@@ -32,13 +32,20 @@ rpm-fedora-43:
 rpm-rocky-10:
 	scripts/build-rpm.sh $(ROCKY_IMAGE) dist/rocky-10
 
-# Test plans run sequentially, one podman container per plan.
+# Host-side unit tests for the build script. No network, no container
+# runtime: build-rpm.sh's curl and podman seams are pointed at stubs.
+unit:
+	scripts/tests/test-build-rpm.sh
+
+# Test plans run sequentially, one podman container per plan. Both depend on
+# unit, which make therefore runs exactly once per invocation — including for
+# a single-target run such as the one CI uses.
 test: test-fedora-43 test-rocky-10
 
-test-fedora-43: rpm-fedora-43
+test-fedora-43: unit rpm-fedora-43
 	$(TMT) run -v --scratch --id fedora-43 plan --name /plans/fedora-43
 
-test-rocky-10: rpm-rocky-10
+test-rocky-10: unit rpm-rocky-10
 	$(TMT) run -v --scratch --id rocky-10 plan --name /plans/rocky-10
 
 lint:

@@ -101,6 +101,54 @@ bash --norc -c '
     }
 ' || fail "fallback registration via the -D loader broken"
 
+# 4b. Bounded sweep over representative completion inputs. The cases above
+#     pin down specific candidates; this checks the robustness invariant
+#     across a matrix of commands and current-word prefixes: a completion
+#     function must never fail with an unexpected status and must never
+#     write to stderr, whatever partial word it is handed. Prefixes cover
+#     an empty word, option-like words, a path, and a word that matches
+#     nothing at all.
+sweep_commands=(tar kill umount chmod grep)
+sweep_prefixes=('' - -- --ex / /no-such-path-b7f3 zzzz)
+sweep_failures=0
+for cmd in "${sweep_commands[@]}"; do
+    for prefix in "${sweep_prefixes[@]}"; do
+        err=$(mktemp)
+        rc=0
+        bash --norc -c '
+            source /usr/share/bash-completion/bash_completion
+            cmd=$1
+            cur=$2
+            _comp_load "$cmd" || exit 0
+            spec=$(complete -p "$cmd" 2>/dev/null) || exit 0
+            [[ $spec == *" -F "* ]] || exit 0
+            func=$(sed -E "s/.* -F ([^ ]+) .*/\1/" <<<"$spec")
+            COMP_LINE="$cmd $cur"
+            COMP_POINT=${#COMP_LINE}
+            COMP_WORDS=("$cmd" "$cur")
+            COMP_CWORD=1
+            COMPREPLY=()
+            rc=0
+            "$func" "$cmd" "$cur" "$cmd" || rc=$?
+            case $rc in
+                0 | 1 | 124) exit 0 ;;
+                *)
+                    echo "status $rc" >&2
+                    exit 1
+                    ;;
+            esac
+        ' -- "$cmd" "$prefix" 2>"$err" || rc=$?
+        if [ "$rc" -ne 0 ] || [ -s "$err" ]; then
+            echo "SWEEP FAIL: $cmd with cur='$prefix' (rc=$rc)" >&2
+            cat "$err" >&2
+            sweep_failures=$((sweep_failures + 1))
+        fi
+        rm -f "$err"
+    done
+done
+test "$sweep_failures" -eq 0
+echo "sweep OK (${#sweep_commands[@]} commands x ${#sweep_prefixes[@]} prefixes)"
+
 # 5. End-to-end fallback candidate: a real <TAB> press in an interactive
 #    shell must complete "no-such-command-b7f3 /us" to /usr/ via the minimal
 #    fallback's readline delegation. script(1) provides the pty that
