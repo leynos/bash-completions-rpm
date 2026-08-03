@@ -266,6 +266,19 @@ assert_published_set() {
     actual:   $(echo "${actual}" | tr '\n' ' ')"
 }
 
+# True when the published directory holds exactly one complete generation of
+# one of the named tags.
+published_is_one_complete_generation() {
+    local case_dir=$1 actual tag
+    shift
+    [[ -d "${case_dir}/out" ]] || return 1
+    actual=$(published_set "${case_dir}")
+    for tag in "$@"; do
+        [[ ${actual} == "$(complete_set_for "${tag}")" ]] && return 0
+    done
+    return 1
+}
+
 # Both locks must be free once everything has finished.
 assert_locks_free() {
     local case_dir=$1 what=$2
@@ -412,6 +425,82 @@ publication_case "${workdir}/publish-atomic" auto
 
 start 'publication is all-or-nothing (fallback path)'
 publication_case "${workdir}/publish-fallback" never
+
+# Two builds of the same target, held together at the pre-publication barrier
+# and then released into the publication lock at once. Neither the staged
+# output of either build nor any mixture of the two may ever be visible: the
+# published directory must hold one complete generation at every moment, and
+# one complete generation at the end. Which of the two wins the lock is
+# deliberately not asserted — that is the point of the lock, not a property
+# of it.
+start 'two concurrent builds never expose a partial or mixed generation'
+c="${workdir}/concurrent-publish"
+prepare_case "${c}"
+announce_a="${c}/announce-a.fifo"
+wait_a="${c}/wait-a.fifo"
+announce_b="${c}/announce-b.fifo"
+wait_b="${c}/wait-b.fifo"
+mkfifo "${announce_a}" "${wait_a}" "${announce_b}" "${wait_b}"
+
+rc=$(run_build "${c}" PODMAN_STUB_TAG=previous)
+assert_eq 0 "${rc}" 'exit status priming the previous set'
+
+prepare_case "${c}"
+start_build_bg "${c}" "${c}/a.out" \
+    PODMAN_STUB_TAG=build-a \
+    PREPUBLISH_ANNOUNCE_FIFO="${announce_a}" \
+    PREPUBLISH_WAIT_FIFO="${wait_a}"
+pid_a=${bg_pid}
+start_build_bg "${c}" "${c}/b.out" \
+    PODMAN_STUB_TAG=build-b \
+    PREPUBLISH_ANNOUNCE_FIFO="${announce_b}" \
+    PREPUBLISH_WAIT_FIFO="${wait_b}"
+pid_b=${bg_pid}
+
+read -r _ <"${announce_a}"
+read -r _ <"${announce_b}"
+
+# Both builds now hold the activity lock with a complete, validated set
+# staged and unpublished.
+assert_published_set "${c}" previous 'while both builds wait to publish'
+assert_eq 2 "$(stray_staging "${c}" | grep -c .)" \
+    'staging directories in flight'
+
+# Take the publication lock from outside, so that releasing both builds cannot
+# publish anything. This is what makes the next assertion a statement about
+# the lock rather than about timing: neither build can get past
+# publish_staging's flock while this holder owns it, however long they run.
+holder_ready="${c}/holder-ready.fifo"
+holder_release="${c}/holder-release.fifo"
+mkfifo "${holder_ready}" "${holder_release}"
+flock -x "${c}/cache/locks/publish-out.lock" \
+    -c "echo held >'${holder_ready}'; read -r _ <'${holder_release}'" &
+holder_pid=$!
+read -r _ <"${holder_ready}"
+
+# Release both builds into the publication lock at once.
+echo go >"${wait_a}" &
+echo go >"${wait_b}" &
+
+# Both are now past the barrier and blocked on the lock this test holds, so
+# the published directory must still be exactly the previous generation, and
+# neither build can have exited.
+assert_published_set "${c}" previous 'while the publication lock is held'
+kill -0 "${pid_a}" 2>/dev/null || fail 'build A exited without the publication lock'
+kill -0 "${pid_b}" 2>/dev/null || fail 'build B exited without the publication lock'
+
+echo go >"${holder_release}"
+wait "${holder_pid}"
+wait "${pid_a}" || fail "build A failed: $(cat "${c}/a.out")"
+wait "${pid_b}" || fail "build B failed: $(cat "${c}/b.out")"
+
+# Which build won the lock is deliberately not asserted; that it published
+# alone, and whole, is.
+published_is_one_complete_generation "${c}" build-a build-b ||
+    fail "final published set is not one complete generation: [$(published_set "${c}")]"
+assert_eq '' "$(stray_staging "${c}")" 'staging directories after the race'
+assert_eq '' "$(stray_temps "${c}")" 'temporary files after the race'
+assert_locks_free "${c}" 'after two concurrent builds'
 
 # --- cases: clean against an active build -----------------------------------
 

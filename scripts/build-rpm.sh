@@ -223,10 +223,26 @@ publish_staging() {
     exec {published_fd}>&-
 }
 
+# Test-only seam. Announces that this build has staged and validated a
+# complete set and is about to contend for the publication lock, then blocks
+# until released. It is inert unless PREPUBLISH_ANNOUNCE_FIFO is set, which
+# no real build sets, and it changes nothing else: the activity lock is still
+# held and the staged output is still unpublished while it waits. It exists
+# so scripts/tests/test-build-rpm.sh can hold two builds of the same target
+# at exactly this point and then release them into the publication lock
+# together.
+prepublish_barrier() {
+    [[ -n ${PREPUBLISH_ANNOUNCE_FIFO:-} ]] || return 0
+    echo staged >"${PREPUBLISH_ANNOUNCE_FIFO}"
+    [[ -n ${PREPUBLISH_WAIT_FIFO:-} ]] || return 0
+    read -r _ <"${PREPUBLISH_WAIT_FIFO}"
+}
+
 acquire_activity_lock
 fetch_tarball
 build_in_container
 validate_staging
+prepublish_barrier
 publish_staging
 
 echo "RPMs written to ${outdir}"

@@ -187,16 +187,30 @@ ______________________________________________________________________
 ## Test architecture
 
 `make unit` runs `scripts/tests/test-build-rpm.sh`, a host-side suite
-of 13 cases that exercises `build-rpm.sh`'s and `scripts/clean.sh`'s
+of 14 cases that exercises `build-rpm.sh`'s and `scripts/clean.sh`'s
 own validation, orchestration and locking — argument checking, cache
 reuse and re-fetch, checksum enforcement, the `podman` invocation's
 mounts, atomic publication on both the exchange and the fallback
-path, refusal to publish an incomplete build, `clean` waiting for an
-in-flight build, and failed and cancelled builds leaving no staging
-directories, temporary files or held locks behind — against stub
-commands and a local fixture. Its concurrency cases are driven by
-FIFO handshakes rather than timing sleeps, so they are deterministic;
-the suite needs neither a network nor a real podman runtime.
+path, refusal to publish an incomplete build, two concurrent builds
+of the same target, `clean` waiting for an in-flight build, and
+failed and cancelled builds leaving no staging directories, temporary
+files or held locks behind — against stub commands and a local
+fixture. Its concurrency cases are driven by FIFO handshakes rather
+than timing sleeps, so they are deterministic; the suite needs
+neither a network nor a real podman runtime.
+
+The concurrent-build case holds two builds of one target at a
+test-only barrier just before publication, `prepublish_barrier`,
+which is inert unless `PREPUBLISH_ANNOUNCE_FIFO` is set and so never
+runs in a real build. With both staged and validated, the test takes
+the target's publication lock itself and then releases both builds
+into it. Neither can publish while that lock is held, which is what
+makes the assertion that the published directory is still exactly the
+previous complete set a statement about the lock rather than about
+timing. Once the test drops the lock, one build publishes and the
+other follows; which of the two wins is deliberately not asserted,
+only that the result is one complete generation and that no staging
+directory, temporary file or held lock survives.
 
 Each target has a `tmt` plan (`plans/fedora-43.fmf`, `plans/rocky-10.fmf`)
 that:
@@ -236,13 +250,14 @@ is and whether a single deployment fact is what is actually at risk:
   the selector silently matching nothing; it is not the invariant being
   tested.
 - **Completion robustness.** `functional` pins a handful of concrete
-  cases (`kill -`, `tar --`, `umount ` producing real `COMPREPLY`
-  output), then adds a bounded property check over a matrix of five
-  commands (`tar`, `kill`, `umount`, `chmod`, `grep`) and seven
-  current-word prefixes (empty, `-`, `--`, `--ex`, `/`, a non-existent
-  path, and a word matching nothing), asserting that no completion
-  function ever exits with an unexpected status or writes to stderr,
-  whatever partial word it is handed.
+  cases (`kill -`, `tar --`, and `umount` followed by a trailing
+  space, producing real `COMPREPLY` output), then adds a bounded
+  property check over a matrix of five commands (`tar`, `kill`,
+  `umount`, `chmod`, `grep`) and seven current-word prefixes (empty,
+  `-`, `--`, `--ex`, `/`, a non-existent path, and a word matching
+  nothing), asserting that no completion function ever exits with an
+  unexpected status or writes to stderr, whatever partial word it is
+  handed.
 - **EVR ordering.** The invariant that matters is not that
   `rpm.vercmp` is a correct total order over arbitrary EVR pairs — that
   is upstream `rpm`'s own property, and it is tested there — but that
@@ -264,7 +279,7 @@ is and whether a single deployment fact is what is actually at risk:
 The two EVR strings used in the live comparison are validated against
 a conservative character pattern before being interpolated into the
 `rpm --eval "%{lua:...}"` expression, so the generated expression's
-quoting is well defined and malformed query output fails loudly rather
+quoting is well defined, and malformed query output fails loudly rather
 than silently.
 
 ______________________________________________________________________
