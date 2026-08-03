@@ -18,8 +18,10 @@ endif
 
 .PHONY: all rpms rpm-fedora-43 rpm-rocky-10 test test-fedora-43 test-rocky-10 unit lint clean
 
-# The rpm targets share the .build tarball cache and the test targets share
-# podman resources; parallel make would race on both.
+# The test targets share podman resources, so keep them ordered within a
+# single make process. Cross-process safety does not rely on this: the
+# tarball cache is checksum-gated, output is published atomically under a
+# per-target lock, and clean takes the activity lock exclusively.
 .NOTPARALLEL:
 
 all: test
@@ -51,5 +53,7 @@ test-rocky-10: unit rpm-rocky-10
 lint:
 	tmt lint
 
+# Serialized against builds via .build/locks/activity.lock; keeps that lock
+# directory so a waiting build cannot end up locking an unlinked inode.
 clean:
-	rm -rf dist .build
+	scripts/clean.sh

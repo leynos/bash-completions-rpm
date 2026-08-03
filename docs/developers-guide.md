@@ -6,6 +6,32 @@ installing the built packages, see the [user's guide](users-guide.md).
 
 ______________________________________________________________________
 
+## Requirements
+
+The host needs:
+
+- `podman` (builds and tests run in containers)
+- `tmt` >= 1.38
+- `curl` (fetches the upstream release tarball)
+- `sha256sum` (coreutils; verifies the tarball checksum)
+- `make`
+
+Container provisioning needs `tmt` installed with its container
+extra, `tmt[provision-container]`; CI installs it with
+`pipx install 'tmt[provision-container]'`.
+
+The test containers themselves need further packages — `tar`,
+`util-linux`, `/usr/bin/script` and `/usr/bin/ps` for `functional`;
+`/usr/bin/pkg-config` for `smoke`; and `rpmlint` for `rpmlint`, on
+Fedora only. These come from each test's `require:` metadata in its
+`main.fmf` and are installed into the provisioned guest by `tmt`
+itself; none of them is installed by a developer on the host. Rocky
+Linux 10 disables the `rpmlint` test: `tests/rpmlint/main.fmf` carries
+an `adjust` rule that sets `enabled: false` when `distro == rocky-10`,
+because `rpmlint` is not in Rocky's base repositories.
+
+______________________________________________________________________
+
 ## Repository layout
 
 - `bash-completion.spec`: the RPM spec, based on the Fedora rawhide spec
@@ -13,8 +39,10 @@ ______________________________________________________________________
   removed.
 - `scripts/build-rpm.sh`: builds the RPMs for one target inside a podman
   container.
+- `scripts/clean.sh`: removes build output and the cached tarball,
+  serialized against builds. Run via `make clean`.
 - `scripts/tests/test-build-rpm.sh`: host-side unit tests for
-  `build-rpm.sh`, run via `make unit`.
+  `build-rpm.sh` and `scripts/clean.sh`, run via `make unit`.
 - `plans/`: `tmt` plans, one per target (`fedora-43.fmf`, `rocky-10.fmf`),
   each provisioning a container and installing the freshly built RPMs
   before running the tests.
@@ -28,11 +56,16 @@ ______________________________________________________________________
 
 ## Build flow
 
-`scripts/build-rpm.sh <image> <outdir>` builds the RPM for one target. It
-is organized into two functions, called in order from the bottom of the
-script:
+`scripts/build-rpm.sh <image> <outdir>` builds the RPM for one target
+and publishes it atomically. It is organized into five functions,
+called in order from the bottom of the script: `acquire_activity_lock`,
+`fetch_tarball`, `build_in_container`, `validate_staging`, and
+`publish_staging`.
 
-1. `fetch_tarball` downloads the upstream
+1. `acquire_activity_lock` takes `.build/locks/activity.lock` shared
+   for the lifetime of the script, so `scripts/clean.sh` (which takes
+   the same lock exclusively) never runs while a build is active.
+2. `fetch_tarball` downloads the upstream
    `bash-completion-2.18.0.tar.xz` release tarball into `.build/`.
    Reuse of a cached file is checksum-gated: it is verified against a
    sha256 pinned in the script rather than merely checked for
@@ -41,31 +74,95 @@ script:
    download goes to a per-invocation `mktemp` file inside `.build/`
    and is published to the final name with a single atomic rename; an
    `EXIT` trap removes the temporary file on failure. This makes the
-   cache safe for concurrent invocations to share: the `Makefile`'s
-   `.NOTPARALLEL` only orders targets within one `make` process, so
-   two `make` runs, or two direct calls to the script, can reach the
-   download at the same time.
-2. `build_in_container` runs `podman run` against the given container
-   image, mounting the spec, the cached tarball, and the output
-   directory. Inside the container it installs `rpm-build` and `make`,
-   runs `rpmbuild -ba` against the spec, then clears any RPMs left
-   over from an earlier build out of `<outdir>/` and `<outdir>/srpm/`
-   before copying in the freshly built binary RPMs and SRPM. The
-   output directory persists between runs, and both the `tmt` plans'
-   `prepare` step (which installs every RPM under `dist/<target>`)
-   and the release job (which globs every `*.rpm`) would otherwise
-   pick up a stale package from a previous version alongside the
-   current build.
+   cache safe for concurrent invocations to share: two `make` runs, or
+   two direct calls to the script, can reach the download at the same
+   time.
+3. `build_in_container` runs `podman run` against the given container
+   image, mounting the spec and the cached tarball read-only, and a
+   fresh per-invocation staging directory at `/out`. The staging
+   directory is created with `mktemp -d` under `dist/.staging/`
+   (`STAGING_ROOT`, which defaults to a `.staging` directory beside
+   the published one, so promotion is a rename within one filesystem).
+   Inside the container it installs `rpm-build` and `make`, runs
+   `rpmbuild -ba` against the spec, and copies the freshly built
+   binary RPMs and SRPM into the staging directory. The published
+   `<outdir>` is deliberately never mounted into the container, so
+   nothing outside the script ever observes a half-populated output
+   directory.
+4. `validate_staging` refuses to publish an incomplete set: it
+   requires at least one base package, one `-devel` subpackage, and
+   one source RPM under `srpm/` in the staging directory, and names
+   whatever is missing otherwise. A build that produced only some of
+   its packages leaves the previously published output untouched.
+5. `publish_staging` replaces `<outdir>` with the staging directory
+   under an exclusive per-target lock,
+   `.build/locks/publish-<target>.lock`, so two builds of the same
+   target cannot interleave their swaps. `mv -T --exchange` (the
+   `renameat2` `RENAME_EXCHANGE` call) swaps the staging and published
+   directories in one atomic step, so a reader of `<outdir>` sees
+   either the whole previous set or the whole new set. First
+   publication, where `<outdir>` does not yet exist, is a plain
+   `mv -T` rename, also atomic. Hosts without `RENAME_EXCHANGE` —
+   coreutils older than 9.5, or a filesystem that does not implement
+   the call — fall back to moving the old directory aside and then
+   moving the new one in, which leaves a brief window in which
+   `<outdir>` does not exist; even then no partial set is ever
+   visible. GitHub's `ubuntu-24.04` runners ship coreutils 9.4 and
+   therefore take the fallback path.
+
+An `EXIT`/`INT`/`TERM` trap removes only this invocation's own
+scratch on cancellation or failure — the part-downloaded tarball and
+the staging directory — releasing its locks as the corresponding file
+descriptors close.
+
+### Ownership
+
+- `.build/`: the checksum-verified upstream tarball cache, plus
+  `.build/locks/`. Shared by every target and every concurrent
+  invocation; owned by no single build.
+- `dist/<target>/`: published output, only ever replaced whole by the
+  publish step.
+- `dist/.staging/`: per-invocation staging directories, each owned by
+  exactly one invocation, which removes its own on exit.
+- `make clean` runs `scripts/clean.sh`, which removes `dist/` and the
+  cached tarball but deliberately keeps `.build/locks/` — removing a
+  lock file while holding a lock on it would let a waiting process
+  lock the unlinked inode and proceed as though it held exclusive
+  access.
+
+### Locking
+
+- `.build/locks/activity.lock` is held shared by `build-rpm.sh` for
+  its whole run; `scripts/clean.sh` takes the same lock exclusively,
+  so `clean` waits for in-flight builds and no build can start while
+  it is removing things. That is what stops `clean` deleting output
+  or cache a build is using.
+- `.build/locks/publish-<target>.lock` is held exclusively across the
+  publish step, so two builds of the same target cannot interleave
+  their swaps.
+
+This reworking is transparent at the command level: `make rpms`,
+`make test`, `make test-fedora-43`, `make test-rocky-10` and
+`make clean` all behave as before from a developer's point of view.
 
 Every external command the script invokes (`curl`, `sha256sum`,
-`podman`) and every pinned input (`VERSION`, `TARBALL_URL`,
-`TARBALL_SHA256`, `CACHE_DIR`) can be overridden from the environment,
-each via a `: "${NAME:=default}"` seam. Real builds override none of
-them; the seams exist so `scripts/tests/test-build-rpm.sh` can drive
-the script against stub commands and a local fixture, with no network
-or container runtime. `<outdir>` is normally resolved relative to the
-repository root, but an absolute path is taken as given — the unit
-tests use that to write outside the checkout.
+`podman`, `flock`) and every pinned or configurable input (`VERSION`,
+`TARBALL_URL`, `TARBALL_SHA256`, `CACHE_DIR`, `LOCK_DIR`,
+`STAGING_ROOT`, `PUBLISH_EXCHANGE`) can be overridden from the
+environment, each via a `: "${NAME:=default}"` seam. Real builds
+override none of them; the seams exist so
+`scripts/tests/test-build-rpm.sh` can drive the script against stub
+commands and a local fixture, with no network or container runtime.
+`PUBLISH_EXCHANGE=never` forces the fallback publication path, which
+the unit tests use to exercise it on any host regardless of the
+host's coreutils version. `<outdir>` is normally resolved relative to
+the repository root, but an absolute path is taken as given — the
+unit tests use that to write outside the checkout.
+
+`scripts/clean.sh` has an analogous set of seams: `FLOCK`,
+`CACHE_DIR`, `LOCK_DIR`, `DIST_DIR`, and a test-only
+`CLEAN_PRELOCK_HOOK` that the unit suite uses to observe the script
+waiting on the activity lock without a timing sleep.
 
 The `Makefile` wires this up per target:
 
@@ -90,10 +187,16 @@ ______________________________________________________________________
 ## Test architecture
 
 `make unit` runs `scripts/tests/test-build-rpm.sh`, a host-side suite
-that exercises `build-rpm.sh`'s own validation and orchestration —
-argument checking, cache reuse and re-fetch, checksum enforcement, and
-the `podman` invocation's mounts — against stub commands and a local
-fixture, with no network or container runtime required.
+of 13 cases that exercises `build-rpm.sh`'s and `scripts/clean.sh`'s
+own validation, orchestration and locking — argument checking, cache
+reuse and re-fetch, checksum enforcement, the `podman` invocation's
+mounts, atomic publication on both the exchange and the fallback
+path, refusal to publish an incomplete build, `clean` waiting for an
+in-flight build, and failed and cancelled builds leaving no staging
+directories, temporary files or held locks behind — against stub
+commands and a local fixture. Its concurrency cases are driven by
+FIFO handshakes rather than timing sleeps, so they are deterministic;
+the suite needs neither a network nor a real podman runtime.
 
 Each target has a `tmt` plan (`plans/fedora-43.fmf`, `plans/rocky-10.fmf`)
 that:
@@ -186,11 +289,13 @@ runs it only once per invocation, even for a single-target run. The
 Makefile declares `.NOTPARALLEL` because the `test-*` targets share
 podman resources and parallel `make` would race on them.
 `.NOTPARALLEL` only orders targets within a single `make` process,
-though: the `.build/` tarball cache shared by the `rpm-*` targets is
-protected independently, by
-`fetch_tarball`'s checksum-gated reuse and atomic rename, so separate
-`make` invocations (or direct script calls) racing on the same cache
-entry remain safe.
+though; cross-process safety no longer depends on it. The `.build/`
+tarball cache shared by the `rpm-*` targets is protected
+independently, by `fetch_tarball`'s checksum-gated reuse and atomic
+rename, and published output is protected by `publish_staging`'s
+per-target lock and atomic swap (see [Build flow](#build-flow)), so
+separate `make` invocations, or direct script calls, racing on the
+same cache entry or output directory remain safe.
 
 The Makefile also detects a WSL2 kernel (`grep -qi microsoft
 /proc/version`) and, only in that case, runs `tmt` with
