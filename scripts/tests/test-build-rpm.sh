@@ -330,6 +330,26 @@ published_is_one_complete_generation() {
     return 1
 }
 
+# Does this host support the atomic directory swap? That needs coreutils
+# 9.5 or newer and a filesystem implementing renameat2(RENAME_EXCHANGE).
+# GitHub's ubuntu-24.04 runners ship coreutils 9.4 and take the documented
+# fallback, so the publication mode a default build reports is
+# host-dependent and cannot be asserted as a constant.
+exchange_supported() {
+    local probe="${workdir}/exchange-probe" rc=0
+    rm -rf "${probe}"
+    mkdir -p "${probe}/a" "${probe}/b"
+    mv -T --exchange "${probe}/a" "${probe}/b" 2>/dev/null || rc=1
+    rm -rf "${probe}"
+    return "${rc}"
+}
+
+if exchange_supported; then
+    default_publish_mode=exchange
+else
+    default_publish_mode=fallback
+fi
+
 # Both locks must be free once everything has finished.
 assert_locks_free() {
     local case_dir=$1 what=$2
@@ -474,8 +494,13 @@ assert_eq first "$(log_field "${log}" published mode)" 'first publication mode'
 rc=$(run_build "${c}" PODMAN_STUB_TAG=second)
 assert_eq 0 "${rc}" 'exit status on a warm cache'
 has_event "${c}/output" cache_hit || fail 'no cache_hit record on a warm cache'
-assert_eq exchange "$(log_field "${c}/output" published mode)" \
+assert_eq "${default_publish_mode}" "$(log_field "${c}/output" published mode)" \
     'second publication mode'
+if [[ ${default_publish_mode} == fallback ]]; then
+    assert_eq exchange_unsupported \
+        "$(log_field "${c}/output" published fallback_reason)" \
+        'fallback reason on a host without RENAME_EXCHANGE'
+fi
 
 rc=$(run_build "${c}" PODMAN_STUB_TAG=third PUBLISH_EXCHANGE=never)
 assert_eq 0 "${rc}" 'exit status on the fallback path'
@@ -531,7 +556,7 @@ publication_case() {
     assert_locks_free "${c}" "after publication (${exchange})"
 }
 
-start 'publication is all-or-nothing (atomic exchange)'
+start 'publication is all-or-nothing (host default path)'
 publication_case "${workdir}/publish-atomic" auto
 
 start 'publication is all-or-nothing (fallback path)'
