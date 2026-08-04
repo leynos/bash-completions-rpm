@@ -43,6 +43,9 @@ ______________________________________________________________________
   serialized against builds. Run via `make clean`.
 - `scripts/tests/test-build-rpm.sh`: host-side unit tests for
   `build-rpm.sh` and `scripts/clean.sh`, run via `make unit`.
+- `scripts/tests/model_check.py`: a bounded state-space check of the
+  same build, publication and cleanup machine, also run via
+  `make unit`.
 - `plans/`: `tmt` plans, one per target (`fedora-43.fmf`, `rocky-10.fmf`),
   each provisioning a container and installing the freshly built RPMs
   before running the tests.
@@ -105,10 +108,20 @@ called in order from the bottom of the script: `acquire_activity_lock`,
    `mv -T` rename, also atomic. Hosts without `RENAME_EXCHANGE` —
    coreutils older than 9.5, or a filesystem that does not implement
    the call — fall back to moving the old directory aside and then
-   moving the new one in, which leaves a brief window in which
-   `<outdir>` does not exist; even then no partial set is ever
-   visible. GitHub's `ubuntu-24.04` runners ship coreutils 9.4 and
-   therefore take the fallback path.
+   moving the new one in. GitHub's `ubuntu-24.04` runners ship
+   coreutils 9.4 and therefore take the fallback path. This fallback
+   is **not** atomic: `<outdir>` is briefly absent between the two
+   moves of a normal swap, though no partial or mixed set is ever
+   visible on either path. If the fallback's promotion move fails,
+   the previous output is rolled back into place and the build exits
+   non-zero. If the rollback itself also fails, the build still exits
+   non-zero, `<outdir>` is left absent, and the previous complete
+   output is preserved at `<staging>.previous`, which `cleanup`
+   deliberately never removes; the failure message names that
+   recoverable path. A `PUBLISH_MV` seam is used for exactly these two
+   moves — promotion and rollback — and nothing else, defaulting to
+   `mv`, so a test stub can inject a failure into either move without
+   disturbing the script's other renames.
 
 An `EXIT`/`INT`/`TERM` trap removes only this invocation's own
 scratch on cancellation or failure — the part-downloaded tarball and
@@ -141,6 +154,35 @@ descriptors close.
   publish step, so two builds of the same target cannot interleave
   their swaps.
 
+### Diagnostics
+
+Every lifecycle step writes a single-line `key=value` record to
+stdout, prefixed `build_event`, so a CI log can be grepped or parsed.
+Every record carries `event`, `target`, `build_id` and
+`elapsed_seconds`; a free-form `detail="..."` field, when present, is
+always last. `build_id` is derived from the pid and bash's `RANDOM`
+and carries no information about the inputs, so it is safe to publish
+in CI artefacts.
+
+The events logged across the lifecycle are `activity_lock_acquired`,
+`cache_hit`, `cache_miss`, `download_start`, `checksum_failed`,
+`cache_published`, `staging_created`, `container_build_start`,
+`container_build_failed`, `validation_ok` and `validation_failed`
+(both with `base=`, `devel=` and `srpm=` counts),
+`publication_lock_acquired`, `published` (with
+`mode=first|exchange|fallback` and, on the fallback path,
+`fallback_reason=exchange_disabled|exchange_unsupported`),
+`publish_fallback_failed`, `rollback_start`, `rollback_ok`,
+`rollback_failed`, `build_complete`, `cleanup`, and `build_failed`
+(emitted by `die`, carrying the failure detail).
+
+`TARBALL_URL` is overridable and may carry userinfo or a query token,
+so it is never logged, in whole or in part: downloads are identified
+by tarball filename only, and any diagnostic text captured from
+`curl` passes through a `redact_secrets` helper that strips URL
+userinfo and query strings before it is logged. This is what makes
+the CI log safe to upload as an artefact.
+
 This reworking is transparent at the command level: `make rpms`,
 `make test`, `make test-fedora-43`, `make test-rocky-10` and
 `make clean` all behave as before from a developer's point of view.
@@ -148,11 +190,12 @@ This reworking is transparent at the command level: `make rpms`,
 Every external command the script invokes (`curl`, `sha256sum`,
 `podman`, `flock`) and every pinned or configurable input (`VERSION`,
 `TARBALL_URL`, `TARBALL_SHA256`, `CACHE_DIR`, `LOCK_DIR`,
-`STAGING_ROOT`, `PUBLISH_EXCHANGE`) can be overridden from the
-environment, each via a `: "${NAME:=default}"` seam. Real builds
-override none of them; the seams exist so
-`scripts/tests/test-build-rpm.sh` can drive the script against stub
-commands and a local fixture, with no network or container runtime.
+`STAGING_ROOT`, `PUBLISH_EXCHANGE`, `PUBLISH_MV`) can be overridden
+from the environment, each via a `: "${NAME:=default}"` seam. Real
+builds override none of them; the seams exist so
+`scripts/tests/test-build-rpm.sh` and `scripts/tests/model_check.py`
+can drive the script against stub commands and a local fixture, with
+no network or container runtime.
 `PUBLISH_EXCHANGE=never` forces the fallback publication path, which
 the unit tests use to exercise it on any host regardless of the
 host's coreutils version. `<outdir>` is normally resolved relative to
@@ -186,18 +229,23 @@ ______________________________________________________________________
 
 ## Test architecture
 
-`make unit` runs `scripts/tests/test-build-rpm.sh`, a host-side suite
-of 14 cases that exercises `build-rpm.sh`'s and `scripts/clean.sh`'s
-own validation, orchestration and locking — argument checking, cache
-reuse and re-fetch, checksum enforcement, the `podman` invocation's
-mounts, atomic publication on both the exchange and the fallback
-path, refusal to publish an incomplete build, two concurrent builds
-of the same target, `clean` waiting for an in-flight build, and
-failed and cancelled builds leaving no staging directories, temporary
-files or held locks behind — against stub commands and a local
-fixture. Its concurrency cases are driven by FIFO handshakes rather
-than timing sleeps, so they are deterministic; the suite needs
-neither a network nor a real podman runtime.
+`make unit` runs two checks in order. First,
+`scripts/tests/test-build-rpm.sh`, a host-side suite of 18 cases that
+exercises `build-rpm.sh`'s and `scripts/clean.sh`'s own validation,
+orchestration and locking — argument checking, cache reuse and
+re-fetch, checksum enforcement, the `podman` invocation's mounts,
+atomic publication on both the exchange and the fallback path,
+refusal to publish an incomplete build, two concurrent builds of the
+same target, `clean` waiting for an in-flight build, failed and
+cancelled builds leaving no staging directories, temporary files or
+held locks behind, a secret-bearing tarball URL staying out of the
+build log, the structured diagnostic events, and fallback rollback on
+both a successful and a failed rollback — against stub commands and a
+local fixture. Its concurrency cases are driven by FIFO handshakes
+rather than timing sleeps, so they are deterministic; the suite needs
+neither a network nor a real podman runtime. Second,
+`scripts/tests/model_check.py` runs (see
+[Bounded state-space check](#bounded-state-space-check) below).
 
 The concurrent-build case holds two builds of one target at a
 test-only barrier just before publication, `prepublish_barrier`,
@@ -211,6 +259,51 @@ timing. Once the test drops the lock, one build publishes and the
 other follows; which of the two wins is deliberately not asserted,
 only that the result is one complete generation and that no staging
 directory, temporary file or held lock survives.
+
+### Bounded state-space check
+
+`scripts/tests/model_check.py` sweeps the same build, publication and
+cleanup machine that `test-build-rpm.sh` exercises with fixed cases.
+It is a **bounded check, not a proof**: it samples a finite, seeded
+set of cases and interleavings, so a pass demonstrates the absence of
+a violation across whatever it sampled, not correctness for every
+possible input.
+
+It has two layers. An **executed** layer drives the real
+`build-rpm.sh` and `clean.sh` through stub commands and FIFOs, over
+generated combinations of cache state (absent, valid, corrupt,
+interrupted download), build outcome (success, partial, container
+failure, cancellation), publication mode (first, exchange, fallback,
+fallback promotion failure, rollback failure) and clean position
+(none, before, after). An **abstract** layer models the same algorithm
+as a small transition system and samples interleavings of up to two
+concurrent builds and a clean, covering combinations — arbitrary
+interleavings of two builds' internal steps against a clean — that
+cannot be driven directly. The abstract layer checks the algorithm,
+not the shell code; the executed layer checks the shell code as
+written.
+
+The check is deterministic from an explicit seed, printed on every
+run and repeated alongside the offending case on failure. The seed
+and case counts are overridable: `--seed`/`MODEL_CHECK_SEED`,
+`--executed-cases`/`MODEL_CHECK_EXECUTED` and
+`--schedules`/`MODEL_CHECK_SCHEDULES`. It uses only the Python
+standard library and needs neither a network nor a container runtime.
+
+Its four invariants, stated in the module's docstring, are:
+
+- an observable published output is either absent only in the
+  documented cases, or exactly one complete generation — never
+  partial or mixed;
+- `clean` never removes output or cache while an activity lock is
+  held;
+- a successful rollback restores the prior complete output;
+- a failed or cancelled invocation leaves no invocation-owned staging
+  directory, temporary tarball or held lock.
+
+The deterministic FIFO cases in `test-build-rpm.sh` remain regression
+tests for specific past defects; the model check is a breadth sweep
+over their state space, not a replacement for them.
 
 Each target has a `tmt` plan (`plans/fedora-43.fmf`, `plans/rocky-10.fmf`)
 that:
@@ -248,7 +341,13 @@ is and whether a single deployment fact is what is actually at risk:
   so there is no remaining input space for a property test to explore.
   The `>400` assertion in that test is a sanity floor guarding against
   the selector silently matching nothing; it is not the invariant being
-  tested.
+  tested. Each file's sourcing check is normalized to a documented
+  exit-status set — 0 (sourced cleanly) and 1 (sourced and returned
+  non-zero, which is permitted, since many completions bail out early
+  when their command is not installed) are the only accepted
+  outcomes; anything else is treated as an environmental, I/O or
+  sourcing failure, and every failure is reported with the file path,
+  exit status and captured output.
 - **Completion robustness.** `functional` pins a handful of concrete
   cases (`kill -`, `tar --`, and `umount` followed by a trailing
   space, producing real `COMPREPLY` output), then adds a bounded
@@ -269,7 +368,11 @@ is and whether a single deployment fact is what is actually at risk:
   rather than lexically — a lexical `sort` would rank `2.9` above
   `2.10`; more than one line coming back instead fails the EVR
   character-pattern check below loudly, rather than being silently
-  narrowed. It adds a bounded property check against 13 representative
+  narrowed. A failure of the `dnf repoquery` call itself — as opposed
+  to an empty or unexpected result — is reported with its captured
+  stderr and exit status and fails the test outright, rather than
+  being read as "no candidate". It adds a bounded property check
+  against 13 representative
   older EVRs (epoch-less el7/el8/el9
   forms, epoch-1 el10 and fc forms, a bare `1:2.18.0-1`, a pre-release
   `0.1.rc1` release, and a `~rc1` tilde version). Each pair is compared
@@ -325,11 +428,17 @@ ______________________________________________________________________
 
 `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests.
 It matrices over `[fedora-43, rocky-10]`, running `make test-<target>`
-for each (which builds the RPMs and then the `tmt` plan). On failure it
-uploads the `tmt` logs; on success or failure it uploads the built RPMs
-as artefacts. A `concurrency` group keyed on the workflow and ref cancels
-superseded runs of the same branch or PR. The workflow requests only
-`contents: read` permission.
+for each (which builds the RPMs and then the `tmt` plan). That step
+tees its output to `build-<target>.log`, with `set -o pipefail` so the
+step's exit status is `make`'s rather than `tee`'s. On failure, the
+"Upload build diagnostics on failure" step uploads that log together
+with the `tmt` logs as a single `diagnostics-<target>` artefact
+(renamed from `tmt-logs-<target>`); this is safe to upload because
+`build-rpm.sh` never logs the tarball URL or any other secret-bearing
+input (see [Diagnostics](#diagnostics)). On success or failure it also
+uploads the built RPMs as artefacts. A `concurrency` group keyed on
+the workflow and ref cancels superseded runs of the same branch or PR.
+The workflow requests only `contents: read` permission.
 
 `.github/workflows/release.yml` runs on pushes of tags matching `v*`. It
 repeats the same build-and-test matrix, then a separate `release` job

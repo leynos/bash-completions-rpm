@@ -34,10 +34,12 @@ rpm-fedora-43:
 rpm-rocky-10:
 	scripts/build-rpm.sh $(ROCKY_IMAGE) dist/rocky-10
 
-# Host-side unit tests for the build script. No network, no container
-# runtime: build-rpm.sh's curl and podman seams are pointed at stubs.
+# Host-side tests for the build and clean scripts. No network, no container
+# runtime: their curl, podman and publication-move seams are pointed at
+# stubs. The fixed cases come first, then the bounded state-space sweep.
 unit:
 	scripts/tests/test-build-rpm.sh
+	scripts/tests/model_check.py
 
 # Test plans run sequentially, one podman container per plan. Both depend on
 # unit, which make therefore runs exactly once per invocation — including for

@@ -3,6 +3,9 @@
 # distribution repositories must not replace it with the (older) distro RPM.
 set -euxo pipefail
 
+repo_err=$(mktemp)
+trap 'rm -f "$repo_err"' EXIT
+
 before=$(rpm -q --qf '%{EVR}' bash-completion)
 test "${before%%-*}" = "1:2.18.0"
 
@@ -17,9 +20,28 @@ test "$after" = "$before"
 # comparisons wrong (2.9 would beat 2.10). More than one line coming back is
 # unexpected and fails the pattern check below rather than being silently
 # narrowed.
-repo_evr=$(dnf -q repoquery --latest-limit=1 --qf '%{EVR}\n' bash-completion 2>/dev/null || true)
+#
+# The query's own failure is a real failure of this test, not something to
+# swallow: a broken repository configuration would otherwise look exactly
+# like "no candidate" and quietly weaken the assertion. Capture stderr and
+# the exit status and report both.
+set +x
+repo_query_rc=0
+repo_evr=$(dnf -q repoquery --latest-limit=1 --qf '%{EVR}\n' bash-completion 2>"$repo_err") ||
+    repo_query_rc=$?
+set -x
+if [ "$repo_query_rc" -ne 0 ]; then
+    echo "FAIL: dnf repoquery for bash-completion failed with status ${repo_query_rc}" >&2
+    echo "dnf stderr:" >&2
+    cat "$repo_err" >&2
+    exit 1
+fi
 echo "distro candidate: ${repo_evr:-none}, installed: $after"
-test -n "$repo_evr"
+if [ -z "$repo_evr" ]; then
+    echo "FAIL: dnf repoquery succeeded but returned no EVR for bash-completion" >&2
+    cat "$repo_err" >&2
+    exit 1
+fi
 # Both values are interpolated into a Lua expression below, so check they
 # look like EVRs first. This keeps the quoting of the generated expression
 # well defined and catches malformed query output early.

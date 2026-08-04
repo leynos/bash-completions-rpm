@@ -32,16 +32,24 @@ jobs:
         run: pipx install 'tmt[provision-container]'
 
       # test-<target> depends on rpm-<target>, so one invocation builds the
-      # RPMs and then runs the tmt plan against them.
+      # RPMs and then runs the tmt plan against them. The output is teed to a
+      # log so the build's structured diagnostics survive a failure; pipefail
+      # keeps make's exit status rather than tee's. build-rpm.sh never logs
+      # the tarball URL or any other secret-bearing input, so the log is safe
+      # to upload.
       - name: Build RPMs and run tmt plan
-        run: make test-${{ matrix.target }}
+        run: |
+          set -o pipefail
+          make test-${{ matrix.target }} 2>&1 | tee build-${{ matrix.target }}.log
 
-      - name: Upload tmt logs on failure
+      - name: Upload build diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: tmt-logs-${{ matrix.target }}
-          path: /var/tmp/tmt/${{ matrix.target }}
+          name: diagnostics-${{ matrix.target }}
+          path: |
+            /var/tmp/tmt/${{ matrix.target }}
+            build-${{ matrix.target }}.log
           if-no-files-found: ignore
 
       - name: Upload RPMs

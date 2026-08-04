@@ -161,6 +161,40 @@ fi
 STUB
 chmod +x "${stub_bin}/podman"
 
+# publish-mv stub: stands in for the two publication moves on the fallback
+# path so that promotion and rollback failures can be injected. It fails only
+# for the move it is told to fail, and otherwise behaves exactly like mv. The
+# promotion move's source is the staging directory; the rollback move's
+# source is that directory's .previous sibling.
+cat >"${stub_bin}/publish-mv" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+src=${args[-2]}
+if [[ ${src} == *.previous ]]; then
+    if [[ -n ${PUBLISH_MV_FAIL_ROLLBACK:-} ]]; then
+        echo "publish-mv stub: refusing to roll back ${src}" >&2
+        exit 1
+    fi
+elif [[ -n ${PUBLISH_MV_FAIL_PROMOTION:-} ]]; then
+    echo "publish-mv stub: refusing to promote ${src}" >&2
+    exit 1
+fi
+exec mv "$@"
+STUB
+chmod +x "${stub_bin}/publish-mv"
+
+# First value of <key> on the first build_event record for <event>.
+log_field() {
+    local file=$1 event=$2 key=$3
+    grep -m1 -E "^build_event event=${event}( |\$)" "${file}" 2>/dev/null |
+        tr ' ' '\n' | sed -n "s/^${key}=//p" | head -1
+}
+
+has_event() {
+    grep -qE "^build_event event=$2( |\$)" "$1"
+}
+
 # Environment shared by every invocation of the script under test for a case.
 case_env() {
     local case_dir=$1
@@ -235,9 +269,10 @@ cached_tarball() {
     echo "$1/cache/bash-completion-2.18.0.tar.xz"
 }
 
-# The published set, as "<file>:<tag>" lines, sorted. Empty when absent.
-published_set() {
-    local dir="$1/out"
+# The package set held in a directory, as "<file>:<tag>" lines, sorted.
+# Empty when the directory is absent.
+set_in_dir() {
+    local dir=$1
     [[ -d ${dir} ]] || return 0
     (
         cd "${dir}" || return 0
@@ -245,6 +280,22 @@ published_set() {
             echo "${f}:$(cat "${f}")"
         done
     )
+}
+
+# The published set, as "<file>:<tag>" lines, sorted. Empty when absent.
+published_set() {
+    set_in_dir "$1/out"
+}
+
+# Staging entries that are recovery data, and those that are not.
+previous_dirs() {
+    find "$1/.staging" -mindepth 1 -maxdepth 1 -name '*.previous' \
+        -printf '%f\n' 2>/dev/null || true
+}
+
+staging_excluding_previous() {
+    find "$1/.staging" -mindepth 1 -maxdepth 1 ! -name '*.previous' \
+        -printf '%f\n' 2>/dev/null || true
 }
 
 complete_set_for() {
@@ -384,6 +435,66 @@ assert_published_set "${c}" good 'the previous complete set survives'
 assert_eq '' "$(stray_staging "${c}")" 'staging directories left behind'
 assert_locks_free "${c}" 'after an incomplete build'
 
+# --- cases: diagnostics and secret handling ---------------------------------
+
+start 'keeps a secret-bearing tarball URL out of the build log'
+c="${workdir}/redaction"
+rc=$(run_build "${c}" \
+    TARBALL_URL='https://ci-bot:s3cr3tpassw0rd@example.invalid/private/bash-completion-2.18.0.tar.xz?token=hunter2token')
+assert_eq 0 "${rc}" 'exit status'
+assert_contains "${c}/output" 'bash-completion-2.18.0.tar.xz' \
+    'the tarball filename identifies the download'
+for secret in 's3cr3tpassw0rd' 'hunter2token' 'ci-bot:' 'token=' 'example.invalid'; do
+    if grep -qF -- "${secret}" "${c}/output"; then
+        fail "the build log discloses '${secret}'"
+    fi
+done
+
+start 'emits structured diagnostics for the build lifecycle'
+c="${workdir}/diagnostics"
+rc=$(run_build "${c}" PODMAN_STUB_TAG=first)
+assert_eq 0 "${rc}" 'exit status on a cold cache'
+log="${c}/output"
+for event in activity_lock_acquired cache_miss download_start cache_published \
+    staging_created container_build_start validation_ok \
+    publication_lock_acquired published build_complete; do
+    has_event "${log}" "${event}" || fail "no '${event}' record was logged"
+done
+assert_eq out "$(log_field "${log}" activity_lock_acquired target)" \
+    'target field'
+[[ -n $(log_field "${log}" activity_lock_acquired build_id) ]] ||
+    fail 'build_id field is empty'
+[[ -n $(log_field "${log}" activity_lock_acquired elapsed_seconds) ]] ||
+    fail 'elapsed_seconds field is empty'
+assert_eq 1 "$(log_field "${log}" validation_ok base)" 'validated base count'
+assert_eq 1 "$(log_field "${log}" validation_ok devel)" 'validated devel count'
+assert_eq 1 "$(log_field "${log}" validation_ok srpm)" 'validated srpm count'
+assert_eq first "$(log_field "${log}" published mode)" 'first publication mode'
+
+rc=$(run_build "${c}" PODMAN_STUB_TAG=second)
+assert_eq 0 "${rc}" 'exit status on a warm cache'
+has_event "${c}/output" cache_hit || fail 'no cache_hit record on a warm cache'
+assert_eq exchange "$(log_field "${c}/output" published mode)" \
+    'second publication mode'
+
+rc=$(run_build "${c}" PODMAN_STUB_TAG=third PUBLISH_EXCHANGE=never)
+assert_eq 0 "${rc}" 'exit status on the fallback path'
+assert_eq fallback "$(log_field "${c}/output" published mode)" \
+    'fallback publication mode'
+assert_eq exchange_disabled \
+    "$(log_field "${c}/output" published fallback_reason)" 'fallback reason'
+
+rc=$(run_build "${c}" PODMAN_STUB_TAG=broken PODMAN_STUB_PARTIAL=1)
+[[ ${rc} -ne 0 ]] || fail 'expected a non-zero exit status for a partial build'
+has_event "${c}/output" validation_failed || fail 'no validation_failed record'
+assert_eq 0 "$(log_field "${c}/output" validation_failed devel)" \
+    'reported devel count for a partial build'
+
+rc=$(run_build "${c}" PODMAN_STUB_FAIL=1)
+[[ ${rc} -ne 0 ]] || fail 'expected a non-zero exit status for a failed build'
+has_event "${c}/output" container_build_failed ||
+    fail 'no container_build_failed record'
+
 # --- cases: atomic publication ----------------------------------------------
 
 # A second build is held inside the container step with a partial set already
@@ -501,6 +612,63 @@ published_is_one_complete_generation "${c}" build-a build-b ||
 assert_eq '' "$(stray_staging "${c}")" 'staging directories after the race'
 assert_eq '' "$(stray_temps "${c}")" 'temporary files after the race'
 assert_locks_free "${c}" 'after two concurrent builds'
+
+# --- cases: fallback rollback -----------------------------------------------
+
+# The fallback path moves the previous output aside before promoting staging.
+# If that promotion fails, the previous output must come back.
+start 'rolls back the previous output when fallback promotion fails'
+c="${workdir}/rollback-ok"
+rc=$(run_build "${c}" PODMAN_STUB_TAG=previous)
+assert_eq 0 "${rc}" 'exit status priming the previous set'
+rc=$(run_build "${c}" \
+    PODMAN_STUB_TAG=doomed \
+    PUBLISH_EXCHANGE=never \
+    PUBLISH_MV="${stub_bin}/publish-mv" \
+    PUBLISH_MV_FAIL_PROMOTION=1)
+[[ ${rc} -ne 0 ]] || fail 'expected a non-zero exit status when promotion fails'
+assert_published_set "${c}" previous 'the previous set is restored by rollback'
+has_event "${c}/output" publish_fallback_failed ||
+    fail 'no publish_fallback_failed record'
+has_event "${c}/output" rollback_start || fail 'no rollback_start record'
+has_event "${c}/output" rollback_ok || fail 'no rollback_ok record'
+assert_eq '' "$(previous_dirs "${c}")" '.previous after a successful rollback'
+assert_eq '' "$(staging_excluding_previous "${c}")" \
+    'staging directories after a successful rollback'
+assert_eq '' "$(stray_temps "${c}")" 'temporary files after a rollback'
+assert_locks_free "${c}" 'after a successful rollback'
+
+# If the rollback also fails, the previous output must survive as recovery
+# data rather than being cleaned up with the invocation's own scratch.
+start 'preserves the previous output when rollback itself fails'
+c="${workdir}/rollback-failed"
+rc=$(run_build "${c}" PODMAN_STUB_TAG=previous)
+assert_eq 0 "${rc}" 'exit status priming the previous set'
+rc=$(run_build "${c}" \
+    PODMAN_STUB_TAG=doomed \
+    PUBLISH_EXCHANGE=never \
+    PUBLISH_MV="${stub_bin}/publish-mv" \
+    PUBLISH_MV_FAIL_PROMOTION=1 \
+    PUBLISH_MV_FAIL_ROLLBACK=1)
+[[ ${rc} -ne 0 ]] || fail 'expected a non-zero exit status when rollback fails'
+has_event "${c}/output" rollback_failed || fail 'no rollback_failed record'
+if has_event "${c}/output" build_complete; then
+    fail 'a failed publication was reported as a completed build'
+fi
+grep -qF 'RPMs written to' "${c}/output" &&
+    fail 'a failed publication claimed the RPMs were written'
+
+# The recoverable copy is the complete previous generation, and it is the
+# only staging entry left.
+recoverable=$(previous_dirs "${c}")
+[[ -n ${recoverable} ]] || fail 'the recoverable .previous directory was removed'
+assert_eq "$(complete_set_for previous)" \
+    "$(set_in_dir "${c}/.staging/${recoverable}")" \
+    'the preserved .previous directory holds the complete previous set'
+assert_eq '' "$(staging_excluding_previous "${c}")" \
+    'invocation-owned staging after a failed rollback'
+assert_eq '' "$(stray_temps "${c}")" 'temporary files after a failed rollback'
+assert_locks_free "${c}" 'after a failed rollback'
 
 # --- cases: clean against an active build -----------------------------------
 
