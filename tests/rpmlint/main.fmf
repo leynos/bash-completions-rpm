@@ -1,0 +1,9 @@
+summary: rpmlint the installed packages
+test: ./test.sh
+require:
+  - rpmlint
+duration: 10m
+adjust:
+  - enabled: false
+    when: distro == rocky-10
+    because: rpmlint is not available in Rocky Linux base repositories

@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [fedora-43, rocky-10]
+    steps:
+      # Actions are pinned by commit SHA, matching the digest pinning used for
+      # the build/test container images.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install tmt
+        run: pipx install 'tmt[provision-container]'
+
+      # test-<target> depends on rpm-<target>, so one invocation builds the
+      # RPMs and then runs the tmt plan against them.
+      - name: Build RPMs and run tmt plan
+        run: make test-${{ matrix.target }}
+
+      - name: Upload RPMs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rpms-${{ matrix.target }}
+          path: dist/${{ matrix.target }}/
+
+  release:
+    name: Publish GitHub release
+    needs: build-and-test
+    runs-on: ubuntu-24.04
+    # gh release create needs write access to repository contents
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Download built RPMs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: rpms-*
+          path: dist-artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p assets
+          find dist-artifacts -name '*.rpm' -exec cp {} assets/ \;
+          # The RPMs are unsigned, so publish a checksum manifest alongside
+          # them. Generated from inside assets/ so it lists bare filenames and
+          # `sha256sum -c SHA256SUMS` verifies a directory of downloads as-is.
+          (cd assets && sha256sum -- *.rpm > SHA256SUMS)
+          ls -l assets
+          cat assets/SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # GITHUB_REF_NAME is a default env var; using it avoids shell
+          # injection via crafted tag names
+          tag="$GITHUB_REF_NAME"
+          prerelease_flag=''
+          case "$tag" in
+            *pre*|*rc*|*alpha*|*beta*) prerelease_flag='--prerelease' ;;
+          esac
+          gh release create "$tag" \
+            --title "bash-completion $tag" \
+            --generate-notes \
+            $prerelease_flag \
+            assets/*.rpm assets/SHA256SUMS

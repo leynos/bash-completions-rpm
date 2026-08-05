@@ -1,0 +1,14 @@
+summary: Completion behaviour - dynamic loading and real COMPREPLY output
+test: ./test.sh
+require:
+  - tar
+  - util-linux
+  # script(1) provides the pty for the interactive fallback test; Fedora
+  # packages it separately (util-linux-script), so require the file path
+  - /usr/bin/script
+  # kill's completion lists processes via ps, which the minimal container
+  # images do not ship. Required by file path (procps-ng on both distros)
+  # so the completion runs as it would on a real system rather than
+  # warning to stderr.
+  - /usr/bin/ps
+duration: 10m

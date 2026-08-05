@@ -1,0 +1,3 @@
+summary: Every shipped completion file parses and the main file loads them
+test: ./test.sh
+duration: 10m
