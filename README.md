@@ -21,8 +21,8 @@ ______________________________________________________________________
   and exercised — real `<TAB>` presses, real `COMPREPLY` output, all 1,091
   completion files parsed and sourced.
 - **No host pollution**: the heavy lifting — `rpmbuild`, test guests —
-  happens inside podman containers; the host needs only a handful of
-  standard tools.
+  happens inside podman containers; the host needs only a handful of standard
+  tools.
 
 ______________________________________________________________________
 
@@ -80,10 +80,10 @@ ______________________________________________________________________
 ## Notes
 
 - The Makefile sets `NETAVARK_FW=none` for tmt runs only when it detects a
-  WSL2 kernel (`grep -qi microsoft /proc/version`): netavark's nftables
-  rules fail there, and the firewall is unnecessary for rootless test
-  containers. Elsewhere, including CI runners, whose older netavark
-  rejects the `none` backend, the default firewall driver is left alone.
+  WSL2 kernel (`grep -qi microsoft /proc/version`): netavark's nftables rules
+  fail there, and the firewall is unnecessary for rootless test containers.
+  Elsewhere, including CI runners, whose older netavark rejects the `none`
+  backend, the default firewall driver is left alone.
 - VM-based testing (`tmt provision --how virtual`) is a planned
   follow-up; container coverage comes first.
 
@@ -100,8 +100,8 @@ ______________________________________________________________________
 
 ## Licence
 
-The packaged software and the spec are GPL-2.0-or-later, matching
-upstream [bash-completion](https://github.com/scop/bash-completion).
+The packaged software and the spec are GPL-2.0-or-later, matching upstream
+[bash-completion](https://github.com/scop/bash-completion).
 
 ______________________________________________________________________
 
