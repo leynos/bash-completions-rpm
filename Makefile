@@ -16,7 +16,16 @@ else
 TMT := tmt
 endif
 
-.PHONY: all rpms rpm-fedora-43 rpm-rocky-10 test test-fedora-43 test-rocky-10 unit lint clean
+# `make fmt` and `make check-fmt` call mdtablefix directly. `--git` selects the
+# Markdown files Git tracks and `--include-untracked` adds the untracked files
+# Git does not ignore, so a new document is formatted before it is staged.
+# Both modes need mdtablefix 0.6.1 or later.
+MDLINT ?= markdownlint-cli2
+MDTABLEFIX ?= mdtablefix
+MDTABLEFIX_SELECT = --git --include-untracked
+MDTABLEFIX_RULES = --wrap --renumber --breaks --ellipsis --fences
+
+.PHONY: all rpms rpm-fedora-43 rpm-rocky-10 test test-fedora-43 test-rocky-10 unit lint clean fmt check-fmt
 
 # The test targets share podman resources, so keep them ordered within a
 # single make process. Cross-process safety does not rely on this: the
@@ -59,3 +68,10 @@ lint:
 # directory so a waiting build cannot end up locking an unlinked inode.
 clean:
 	scripts/clean.sh
+
+fmt: ## Format Markdown sources
+	$(MDTABLEFIX) --in-place $(MDTABLEFIX_SELECT) $(MDTABLEFIX_RULES)
+	$(MDLINT) --fix "**/*.md"
+
+check-fmt: ## Verify Markdown formatting
+	$(MDTABLEFIX) --check $(MDTABLEFIX_SELECT) $(MDTABLEFIX_RULES)
