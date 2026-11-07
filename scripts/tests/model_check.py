@@ -527,8 +527,9 @@ def build_steps(name: str, scenario: dict):
     def finish_publish(state):
         """Promote the new output or roll back, as the scenario's publication mode says.
 
-        In ``rollback_failure`` mode the previous output stays as recovery data
-        and the build aborts.
+        It does nothing in ``first`` and ``exchange`` modes, which ``publish``
+        completes. In ``rollback_failure`` mode the previous output stays as
+        recovery data and the build aborts.
         """
         mode = scenario["publish"]
         if mode in ("first", "exchange"):
@@ -568,7 +569,7 @@ def build_steps(name: str, scenario: dict):
 
 
 def clean_steps():
-    """The single atomic step of a clean, as a ``(label, function)`` pair."""
+    """Return a list holding the clean's one step, a ``(label, function)`` pair."""
 
     def wait_and_remove(state):
         """Remove the output and cache, but wait while any activity lock is held."""
