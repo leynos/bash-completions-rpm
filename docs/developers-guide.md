@@ -432,6 +432,17 @@ ______________________________________________________________________
 VM-based testing (`tmt provision --how virtual`) is a planned follow-up;
 container coverage comes first. See the README's Notes section.
 
+## Docstring coverage
+
+`make lint` runs `make interrogate` before `tmt lint`. The target runs
+Interrogate 1.7.0 through `uv tool run` on Python 3.13, so it needs `uv`, and
+requires a docstring on every definition under `scripts`, including nested
+helpers and test doubles. The run prints every definition and fails on any
+`MISSED` row, because Interrogate rounds its percentage to one decimal and so
+can pass a single gap at the 100 per cent threshold. CI runs `make interrogate`
+on the fedora-43 leg of the build and test job. Add a new Python directory to
+`INTERROGATE_TARGETS`.
+
 ## Markdown formatting
 
 Markdown follows the estate's `markdown-formatting-baseline` rule.

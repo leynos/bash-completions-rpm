@@ -279,7 +279,11 @@ class Sandbox:
 
 
 def publication_env(mode: str, bindir: Path) -> dict:
-    """Return the environment settings that force the given publication ``mode``."""
+    """Return the environment settings that configure the given publication ``mode``.
+
+    The ``exchange`` mode adds none, so the inherited environment and host
+    support decide whether publication uses exchange or the fallback.
+    """
     if mode == "exchange":
         return {}
     env = {"PUBLISH_EXCHANGE": "never"}
@@ -521,7 +525,11 @@ def build_steps(name: str, scenario: dict):
             state.publishing_fallback = True
 
     def finish_publish(state):
-        """Promote the new output or roll back, as the scenario's publication mode says."""
+        """Promote the new output or roll back, as the scenario's publication mode says.
+
+        In ``rollback_failure`` mode the previous output stays as recovery data
+        and the build aborts.
+        """
         mode = scenario["publish"]
         if mode in ("first", "exchange"):
             return
