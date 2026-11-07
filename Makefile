@@ -25,7 +25,7 @@ MDTABLEFIX ?= mdtablefix
 MDTABLEFIX_SELECT = --git --include-untracked
 MDTABLEFIX_RULES = --wrap --renumber --breaks --ellipsis --fences
 
-.PHONY: all rpms rpm-fedora-43 rpm-rocky-10 test test-fedora-43 test-rocky-10 unit lint clean fmt check-fmt
+.PHONY: all rpms rpm-fedora-43 rpm-rocky-10 test test-fedora-43 test-rocky-10 unit interrogate lint clean fmt check-fmt
 
 # The test targets share podman resources, so keep them ordered within a
 # single make process. Cross-process safety does not rely on this: the
@@ -61,7 +61,31 @@ test-fedora-43: unit rpm-fedora-43
 test-rocky-10: unit rpm-rocky-10
 	$(TMT) run -v --scratch --id rocky-10 plan --name /plans/rocky-10
 
-lint:
+# The repository's only Python is the model checker under scripts/tests.
+# Interrogate scans each target recursively, subject to its default exclusions.
+INTERROGATE_VERSION ?= 1.7.0
+INTERROGATE_TARGETS ?= scripts
+# Level 2 prints a MISSED row per undocumented definition, which the
+# `interrogate` recipe below looks for: the rounded percentage alone can pass a
+# lone gap.
+INTERROGATE_FLAGS ?= -vv --fail-under 100
+INTERROGATE ?= uv tool run --python 3.13 --from 'interrogate==$(INTERROGATE_VERSION)' interrogate
+
+# Interrogate rounds its percentage to one decimal, so `--fail-under 100` alone
+# can pass a lone gap in a large repository. This recipe also fails when `grep`
+# finds a MISSED row in the report on standard output, which `-vv` or higher
+# prints for each undocumented definition.
+interrogate:
+	@report="$$($(INTERROGATE) $(INTERROGATE_FLAGS) $(INTERROGATE_TARGETS))"; \
+	  status=$$?; \
+	  printf '%s\n' "$$report"; \
+	  test "$$status" -eq 0 || exit "$$status"; \
+	  if printf '%s\n' "$$report" | grep -q '| *MISSED *|'; then \
+	    printf '%s\n' 'interrogate: undocumented definitions remain; see the MISSED rows above' >&2; \
+	    exit 1; \
+	  fi
+
+lint: interrogate
 	tmt lint
 
 # Serialized against builds via .build/locks/activity.lock; keeps that lock
