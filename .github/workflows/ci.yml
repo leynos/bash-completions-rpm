@@ -28,6 +28,15 @@ jobs:
         with:
           persist-credentials: false
 
+      # The docstring gate needs no container runtime, so one leg runs it.
+      - name: Install uv
+        if: matrix.target == 'fedora-43'
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      - name: Check docstring coverage
+        if: matrix.target == 'fedora-43'
+        run: make interrogate
+
       - name: Install tmt
         run: pipx install 'tmt[provision-container]'
 

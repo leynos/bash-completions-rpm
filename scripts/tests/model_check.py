@@ -130,6 +130,7 @@ class CheckFailure(Exception):
 
 
 def write_stubs(bindir: Path) -> None:
+    """Write the executable ``curl``, ``podman`` and ``publish-mv`` stubs to ``bindir``."""
     bindir.mkdir(parents=True, exist_ok=True)
     for name, body in (
         ("curl", CURL_STUB),
@@ -168,6 +169,7 @@ def classify(directory: Path) -> str:
 
 
 def lock_is_free(path: Path) -> bool:
+    """Report whether no process holds the lock file at ``path`` (a missing file is free)."""
     if not path.exists():
         return True
     with open(path, "w") as handle:
@@ -183,6 +185,7 @@ class Sandbox:
     """One disposable case directory wired to the stubs."""
 
     def __init__(self, root: Path, bindir: Path, fixture: Path, digest: str):
+        """Lay out the output, cache, lock and staging paths under ``root``."""
         self.root = root
         self.bindir = bindir
         self.fixture = fixture
@@ -193,6 +196,7 @@ class Sandbox:
         self.staging = root / ".staging"
 
     def base_env(self, tag: str) -> dict:
+        """Return the environment that points a build at the stubs and this sandbox."""
         env = os.environ.copy()
         env.update(
             {
@@ -222,11 +226,16 @@ class Sandbox:
         return self.temp_tarballs()
 
     def temp_tarballs(self) -> set:
+        """Return the names of temporary tarballs left in the cache."""
         if not self.cache.is_dir():
             return set()
         return {p.name for p in self.cache.glob(f"{TARBALL}.??????")}
 
     def staging_entries(self) -> tuple:
+        """Return the sorted staging names as ``(owned, recovery)``.
+
+        A name ending in ``.previous`` is recovery data; any other is owned.
+        """
         if not self.staging.is_dir():
             return ((), ())
         owned, recovery = [], []
@@ -237,6 +246,7 @@ class Sandbox:
         return tuple(sorted(owned)), tuple(sorted(recovery))
 
     def run_build(self, tag: str, extra: dict) -> subprocess.CompletedProcess:
+        """Run ``build-rpm.sh`` under the base environment plus the ``extra`` settings."""
         env = self.base_env(tag)
         env.update(extra)
         return subprocess.run(
@@ -248,6 +258,7 @@ class Sandbox:
         )
 
     def run_clean(self) -> subprocess.CompletedProcess:
+        """Run ``clean.sh`` against this sandbox's cache, lock and output directories."""
         env = os.environ.copy()
         env.update(
             {
@@ -261,12 +272,18 @@ class Sandbox:
         )
 
     def locks_free(self) -> bool:
+        """Report whether every ``*.lock`` file in the lock directory is free."""
         return all(
             lock_is_free(p) for p in (self.locks.glob("*.lock") if self.locks.is_dir() else [])
         )
 
 
 def publication_env(mode: str, bindir: Path) -> dict:
+    """Return the environment settings that configure the given publication ``mode``.
+
+    The ``exchange`` mode adds none, so the inherited environment and host
+    support decide whether publication uses exchange or the fallback.
+    """
     if mode == "exchange":
         return {}
     env = {"PUBLISH_EXCHANGE": "never"}
@@ -279,6 +296,7 @@ def publication_env(mode: str, bindir: Path) -> dict:
 
 
 def build_env(outcome: str) -> dict:
+    """Return the ``podman`` stub settings that produce the given build ``outcome``."""
     if outcome == "partial":
         return {"PODMAN_STUB_PARTIAL": "1"}
     if outcome == "container_failure":
@@ -456,6 +474,7 @@ class ModelState:
     """The observable state the invariants talk about."""
 
     def __init__(self):
+        """Start from an empty system: nothing published, cached or locked."""
         self.published = None  # None, or a generation tag
         self.publishing_fallback = False  # inside the documented absent window
         self.activity_holders = 0
@@ -471,26 +490,32 @@ def build_steps(name: str, scenario: dict):
     """The atomic steps of one build, as (label, function) pairs."""
 
     def acquire_activity(state):
+        """Take the shared activity lock."""
         state.activity_holders += 1
 
     def fetch(state):
+        """Fill the cache when it does not already hold a valid tarball."""
         if state.cache != "valid":
             state.cache = "valid"
 
     def stage(state):
+        """Create this build's staging directory with the scenario's build outcome."""
         state.staging[name] = scenario["build"]
 
     def validate(state):
+        """Abort the build unless the staged output is complete."""
         if scenario["build"] != "success":
             raise _BuildAborted()
 
     def take_publish_lock(state):
+        """Enter the publication critical section, or wait while another build is in it."""
         if state.publish_lock_held:
             raise _LockContended()
         state.publish_lock_held = True
         state.in_critical += 1
 
     def publish(state):
+        """Publish directly, or move the previous output aside first (the fallback)."""
         mode = scenario["publish"]
         if mode in ("first", "exchange"):
             state.published = name
@@ -500,6 +525,12 @@ def build_steps(name: str, scenario: dict):
             state.publishing_fallback = True
 
     def finish_publish(state):
+        """Promote the new output or roll back, as the scenario's publication mode says.
+
+        It does nothing in ``first`` and ``exchange`` modes, which ``publish``
+        completes. In ``rollback_failure`` mode the previous output stays as
+        recovery data and the build aborts.
+        """
         mode = scenario["publish"]
         if mode in ("first", "exchange"):
             return
@@ -515,10 +546,12 @@ def build_steps(name: str, scenario: dict):
             raise _BuildAborted()
 
     def release_publish_lock(state):
+        """Leave the publication critical section."""
         state.publish_lock_held = False
         state.in_critical -= 1
 
     def release_activity(state):
+        """Drop the activity lock and this build's staging directory."""
         state.activity_holders -= 1
         state.staging.pop(name, None)
 
@@ -536,7 +569,10 @@ def build_steps(name: str, scenario: dict):
 
 
 def clean_steps():
+    """Return a list holding the clean's one step, a ``(label, function)`` pair."""
+
     def wait_and_remove(state):
+        """Remove the output and cache, but wait while any activity lock is held."""
         if state.activity_holders != 0:
             raise _CleanBlocked()
         state.published = None
@@ -547,15 +583,15 @@ def clean_steps():
 
 
 class _BuildAborted(Exception):
-    pass
+    """A build step failed, so the build unwinds and its remaining steps are dropped."""
 
 
 class _LockContended(Exception):
-    pass
+    """The publication lock is held elsewhere, so the build waits."""
 
 
 class _CleanBlocked(Exception):
-    pass
+    """An activity lock is held, so the clean waits."""
 
 
 def run_schedule(participants: dict, order: list) -> list:
@@ -687,6 +723,7 @@ def abstract_cases(rng: random.Random, schedules_per_case: int) -> int:
 
 
 def main() -> int:
+    """Run the executed and abstract layers; return 0 when every invariant held."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--seed",
