@@ -61,7 +61,8 @@ test-fedora-43: unit rpm-fedora-43
 test-rocky-10: unit rpm-rocky-10
 	$(TMT) run -v --scratch --id rocky-10 plan --name /plans/rocky-10
 
-# The repository's only Python is the model checker under scripts/tests.
+# The repository's Python is the model checker under scripts/tests and the
+# vendored uv helper, scripts/uv_gate.py.
 # Interrogate scans each target recursively, subject to its default exclusions.
 INTERROGATE_VERSION ?= 1.7.0
 INTERROGATE_TARGETS ?= scripts
