@@ -69,7 +69,13 @@ INTERROGATE_TARGETS ?= scripts
 # `interrogate` recipe below looks for: the rounded percentage alone can pass a
 # lone gap.
 INTERROGATE_FLAGS ?= -vv --fail-under 100
-INTERROGATE ?= uv tool run --python 3.13 --from 'interrogate==$(INTERROGATE_VERSION)' interrogate
+# Every uv call goes through the vendored helper, which cleans the environment,
+# uses the global uv cache, runs offline first and goes online at most once. See
+# https://github.com/leynos/shared-actions/tree/main/uv_gate for the contract.
+# `scripts/uv_gate.py` is the shared-actions helper, vendored byte for byte, so
+# update it by copying the canonical file, never by editing it here.
+UV_GATE ?= python3 scripts/uv_gate.py
+INTERROGATE ?= $(UV_GATE) tool --python 3.13 --from 'interrogate==$(INTERROGATE_VERSION)' -- interrogate
 
 # Interrogate rounds its percentage to one decimal, so `--fail-under 100` alone
 # can pass a lone gap in a large repository. This recipe also fails when `grep`
