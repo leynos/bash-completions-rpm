@@ -435,14 +435,16 @@ container coverage comes first. See the README's Notes section.
 ## Docstring coverage
 
 `make lint` runs `make interrogate` before `tmt lint`. The target runs
-Interrogate 1.7.0 through `uv tool run` on Python 3.13, so it needs `uv`, and
-requires a docstring on every definition it scans under `scripts`, including
-nested helpers and test doubles. Interrogate skips some path prefixes by
-default, so check a new file against the verbose report. The run prints every
-definition and fails on any `MISSED` row, because Interrogate rounds its
-percentage to one decimal and so can pass a single gap at the 100 per cent
-threshold. CI runs `make interrogate` on the fedora-43 leg of the build and
-test job. Add a new Python directory to `INTERROGATE_TARGETS`.
+Interrogate 1.7.0 through the vendored `scripts/uv_gate.py` helper
+(`uv_gate tool`, offline first, on Python 3.13), so it needs `uv` and `python3`
+3.9 or newer on `PATH` with no `UV` override, and requires a docstring on every
+definition it scans under `scripts`, including nested helpers and test doubles.
+Interrogate skips some path prefixes by default, so check a new file against
+the verbose report. The run prints every definition and fails on any `MISSED`
+row, because Interrogate rounds its percentage to one decimal and so can pass a
+single gap at the 100 per cent threshold. CI runs `make interrogate` on the
+fedora-43 leg of the build and test job. Add a new Python directory to
+`INTERROGATE_TARGETS`.
 
 ## Markdown formatting
 
